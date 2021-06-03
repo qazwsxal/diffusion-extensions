@@ -11,11 +11,14 @@ from util import to_device
 class JigsawPuzzle(object):
     def __init__(self, size=128, square_size = 32, circle_size = 32, seed=None):
         self.size = size
+        self.circle_size = circle_size
         self.rng = np.random.default_rng(seed=seed)
         self.square_pos = self.rng.integers((circle_size + square_size)//2,
                                             size - (circle_size + square_size)//2,
                                             size=2)
         self.circle_pos = self.rng.integers(-circle_size//2, circle_size//2, size=2) + self.square_pos
+
+        self.x_0 = torch.from_numpy(self.circle_pos) * 6.0/self.size
         self.square_coords = np.array([self.square_pos - square_size//2, self.square_pos + square_size//2])
         self.circle_coords = np.array([self.circle_pos - circle_size//2, self.circle_pos + circle_size//2])
 
@@ -25,18 +28,18 @@ class JigsawPuzzle(object):
         draw.rectangle(list(self.square_coords.ravel()), fill="red")
         draw.ellipse(list(self.circle_coords.ravel()), fill="blue")
         return image
-    def draw_offset(self, offset):
+    def draw_diffuse(self, circ_pos):
         # We treat the image as being 6 standard deviations wide
         # This means that a circle at the center of the image
         # must travel 3 standard deviations (~0.27% chance)
         # To have its center on the edge of the image.
-        pixel_offset = np.round(self.size * offset/6).numpy()
+        pixel_pos = np.round(self.size * circ_pos / 6).numpy()
         image = Image.new('RGB', (self.size, self.size), "white")
         draw = ImageDraw.Draw(image)
         draw.rectangle(list(self.square_coords.ravel()), fill="red")
         # Take chunk out to show true position
         draw.ellipse(list(self.circle_coords.ravel()), fill="white")
-        offset_circ_coords = self.circle_coords + pixel_offset[None, :]
+        offset_circ_coords = np.array([pixel_pos - self.circle_size//2, pixel_pos + self.circle_size//2])
         draw.ellipse(list(offset_circ_coords.ravel()), fill="blue")
         return image
 
@@ -51,57 +54,62 @@ class JigsawGenerator(IterableDataset):
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
-            seed = worker_info.id
-            torch.seed()
+            seed = torch.seed() # set seed for torch to non-deteministic value and use it for JigsawPuzzle
         else:
             seed = None
 
-        zeros = torch.zeros(2)
         while True:
             step = torch.randint(0,self.steps, (1,))
-            offset, eps = self.process.x_t(zeros, step)
+            t = step/self.steps
             jp = JigsawPuzzle(size=self.size, square_size=self.square_size, circle_size=self.circle_size, seed=seed)
-            image = jp.draw_offset(offset)
-            yield to_tensor(image), eps
+            offset, eps = self.process.x_t(jp.x_0, step)
+            image = jp.draw_diffuse(offset)
+            yield to_tensor(image), eps, t
 
 
+# Quick and dirty convolutional network
+convnet = nn.Sequential(
+    nn.Conv2d(4, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 2, 3, 1, 1),
+    )
 
 if __name__ =="__main__":
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     gen = JigsawGenerator()
-    dl = DataLoader(gen, batch_size=128, pin_memory=True, num_workers=4)
-    # Quick and dirty convolutional network
-    convnet = nn.Sequential(
-        nn.Conv2d(3, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 32, 3, 1, 1),
-        nn.ELU(),
-        nn.MaxPool2d(kernel_size=2),
-        nn.Conv2d(32, 2, 3, 1, 1),
-        ).to(device)
-
+    dl = DataLoader(gen, batch_size=256, pin_memory=True, num_workers=4)
+    convnet = convnet.to(device)
+    convnet.train()
     optim = torch.optim.Adam(convnet.parameters(), lr=3e-4)
     for i, (data) in enumerate(dl):
-        imgs, eps = to_device(device, *data, non_blocking=True)
-        out = convnet(imgs).mean(dim=(-1,-2))
+        imgs, eps, t = to_device(device, *data, non_blocking=True)
+        # Concat time information
+        nn_in = torch.cat((imgs, t[...,None,None].expand(-1, -1, gen.size, gen.size)), dim=1)
+        out = convnet(nn_in).mean(dim=(-1,-2))
         loss = F.mse_loss(out, eps)
-        print(loss)
+        print(loss.item())
         optim.zero_grad()
         loss.backward()
         optim.step()
+        if i == 4000:
+            break
+    torch.save(convnet.state_dict(), "weights_jig-trans.pt")
