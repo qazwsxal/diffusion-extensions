@@ -18,7 +18,7 @@ class JigsawPuzzle(object):
                                             size=2)
         self.circle_pos = self.rng.integers(-circle_size//2, circle_size//2, size=2) + self.square_pos
 
-        self.x_0 = torch.from_numpy(self.circle_pos) * 6.0/self.size
+        self.x_0 = (torch.from_numpy(self.circle_pos)-self.size/2) * 6.0/self.size
         self.square_coords = np.array([self.square_pos - square_size//2, self.square_pos + square_size//2])
         self.circle_coords = np.array([self.circle_pos - circle_size//2, self.circle_pos + circle_size//2])
 
@@ -33,7 +33,7 @@ class JigsawPuzzle(object):
         # This means that a circle at the center of the image
         # must travel 3 standard deviations (~0.27% chance)
         # To have its center on the edge of the image.
-        pixel_pos = np.round(self.size * circ_pos / 6).numpy()
+        pixel_pos = np.round((self.size * circ_pos / 6)+self.size/2).numpy()
         image = Image.new('RGB', (self.size, self.size), "white")
         draw = ImageDraw.Draw(image)
         draw.rectangle(list(self.square_coords.ravel()), fill="red")
@@ -43,13 +43,14 @@ class JigsawPuzzle(object):
         draw.ellipse(list(offset_circ_coords.ravel()), fill="blue")
         return image
 
+
 class JigsawGenerator(IterableDataset):
-    def __init__(self, size=128, square_size = 32, circle_size = 32, steps=500, schedule='cos'):
+    def __init__(self, size=128, square_size = 32, circle_size = 32, steps=500, schedule='linear'):
         self.size = size
         self.square_size = square_size
         self.circle_size = circle_size
         self.steps = steps
-        self.process = GaussianDiffusionProcess(steps=500, schedule='cos')
+        self.process = GaussianDiffusionProcess(steps=steps, schedule=schedule)
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -71,22 +72,40 @@ class JigsawGenerator(IterableDataset):
 convnet = nn.Sequential(
     nn.Conv2d(4, 32, 3, 1, 1),
     nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
     nn.Conv2d(32, 32, 3, 1, 1),
     nn.ELU(),
     nn.MaxPool2d(kernel_size=2),
     nn.Conv2d(32, 32, 3, 1, 1),
     nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
     nn.Conv2d(32, 32, 3, 1, 1),
     nn.ELU(),
     nn.MaxPool2d(kernel_size=2),
     nn.Conv2d(32, 32, 3, 1, 1),
     nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
     nn.Conv2d(32, 32, 3, 1, 1),
     nn.ELU(),
     nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
+    nn.MaxPool2d(kernel_size=2),
+    nn.Conv2d(32, 32, 3, 1, 1),
+    nn.ELU(),
     nn.Conv2d(32, 32, 3, 1, 1),
     nn.ELU(),
     nn.MaxPool2d(kernel_size=2),
@@ -110,6 +129,6 @@ if __name__ =="__main__":
         optim.zero_grad()
         loss.backward()
         optim.step()
-        if i == 4000:
+        if i == 4000: # ~5 mins training
             break
     torch.save(convnet.state_dict(), "weights_jig-trans.pt")

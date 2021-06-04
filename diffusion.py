@@ -5,7 +5,7 @@ import torch
 class DiffusionProcess(object):
     def __init__(self, steps: int, schedule: str, s=0.008, device=torch.device('cpu')):
         self.steps = steps
-        if schedule == "cos" or "cosine":
+        if schedule == "cos" or schedule == "cosine":
             t = torch.linspace(0, 1, steps=steps + 1, device=device)
             num = t + s
             denom = 1 + s
@@ -35,7 +35,7 @@ class GaussianDiffusionProcess(DiffusionProcess):
     def x_t(self, x_0, t):
         loc = self.alpha_bar[t].sqrt() * x_0
         eps = torch.randn_like(x_0)
-        x_t = loc + eps* (1 - self.alpha_bar[t]).sqrt()
+        x_t = loc + eps * (1 - self.alpha_bar[t]).sqrt()
         return x_t, eps
 
     def mu_bar(self, x_t, x_0, t):
