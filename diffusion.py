@@ -6,11 +6,14 @@ class DiffusionProcess(object):
     def __init__(self, steps: int, schedule: str, s=0.008, device=torch.device('cpu')):
         self.steps = steps
         if schedule == "cos" or schedule == "cosine":
-            t = torch.linspace(0, 1, steps=steps + 1, device=device)
+            t = torch.linspace(0, 1, steps=steps+1, device=device)
             num = t + s
             denom = 1 + s
-            self.alpha_bar = torch.cos((num / denom) * np.pi / 2)**2
-            self.beta = torch.clamp_max(1 - self.alpha_bar[1:] / self.alpha_bar[:-1], 0.999)
+            alpha_bar = torch.cos((num / denom) * np.pi / 2)**2
+            alpha_bar = alpha_bar / alpha_bar[0]
+            self.alpha_bar = alpha_bar[1:]
+            self.alpha_bar_m1 = alpha_bar[:-1]
+            self.beta = torch.clamp_max(1 - (self.alpha_bar / self.alpha_bar_m1), 0.999)
             self.alpha = 1 - self.beta
         elif schedule == "linear":
             scale = 1000 / steps
@@ -19,9 +22,10 @@ class DiffusionProcess(object):
             self.beta = torch.linspace(beta_start, beta_end, steps + 1, device=device)
             self.alpha = 1 - self.beta
             self.alpha_bar = torch.cumprod(self.alpha, dim=0)
+            self.alpha_bar_m1 = torch.cat((torch.ones(1), self.alpha_bar[:-1]), dim=0)
         else:
-            raise NotImplementedError
-        self.beta_tilde = (1 - self.alpha_bar[:-1]) / (1 - self.alpha_bar[1:])
+            raise NotImplementedError("Only linear and cosine scheduling are implemented")
+        self.beta_tilde = self.beta * (1 - self.alpha_bar_m1) / (1 - self.alpha_bar)
 
 
 class GaussianDiffusionProcess(DiffusionProcess):
@@ -55,7 +59,9 @@ class GaussianDiffusionProcess(DiffusionProcess):
         return (torch.randn_like(loc) * scale) + loc
 
     def undiffuse(self, x_t, eps, t):
-        noise = torch.randn_like(x_t) * self.beta[t].sqrt()
+        # Don't add noise on last step.
+        noisescale = self.beta[t].sqrt() if t!=0 else 0
+        noise = torch.randn_like(x_t) * noisescale
         eps_scale = (1 - self.alpha[t]) / ((1 - self.alpha_bar[t]).sqrt())
         x_tm1 = self.alpha[t].rsqrt() * (x_t - eps_scale * eps) + noise
         return x_tm1

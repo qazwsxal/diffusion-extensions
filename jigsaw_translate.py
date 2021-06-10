@@ -18,7 +18,7 @@ class JigsawPuzzle(object):
                                             size=2)
         self.circle_pos = self.rng.integers(-circle_size//2, circle_size//2, size=2) + self.square_pos
 
-        self.x_0 = (torch.from_numpy(self.circle_pos)-self.size/2) * 6.0/self.size
+        self.x_0 = (torch.from_numpy(self.circle_pos)-self.size/2) * 8.0/self.size
         self.square_coords = np.array([self.square_pos - square_size//2, self.square_pos + square_size//2])
         self.circle_coords = np.array([self.circle_pos - circle_size//2, self.circle_pos + circle_size//2])
 
@@ -29,11 +29,8 @@ class JigsawPuzzle(object):
         draw.ellipse(list(self.circle_coords.ravel()), fill="blue")
         return image
     def draw_diffuse(self, circ_pos):
-        # We treat the image as being 6 standard deviations wide
-        # This means that a circle at the center of the image
-        # must travel 3 standard deviations (~0.27% chance)
-        # To have its center on the edge of the image.
-        pixel_pos = np.round((self.size * circ_pos / 6)+self.size/2).numpy()
+        # We treat the image as being 8 standard deviations wide
+        pixel_pos = np.round((self.size * circ_pos / 8)+self.size/2).numpy()
         image = Image.new('RGB', (self.size, self.size), "white")
         draw = ImageDraw.Draw(image)
         draw.rectangle(list(self.square_coords.ravel()), fill="red")
@@ -68,53 +65,71 @@ class JigsawGenerator(IterableDataset):
             yield to_tensor(image), eps, t
 
 
+class CoordConv(nn.Module):
+    def __init__(self, size=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(6, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 2, 3, 1, 1),
+            )
+        lin = torch.linspace(-1,1, steps=size)
+
+        coords = torch.stack(torch.meshgrid(lin, lin), dim=0)[None, ...]
+        self.register_buffer("coords", coords) # Register as self.coords and make sure tensors get passed to GPU
+
+    def forward(self, x):
+        batchsize = x.shape[0]
+        exp_coords = self.coords.expand(batchsize, -1, -1, -1)
+        nn_in = torch.cat((x, exp_coords), dim=1)
+        return self.net(nn_in)
+
 # Quick and dirty convolutional network
-convnet = nn.Sequential(
-    nn.Conv2d(4, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.Conv2d(32, 32, 3, 1, 1),
-    nn.ELU(),
-    nn.MaxPool2d(kernel_size=2),
-    nn.Conv2d(32, 2, 3, 1, 1),
-    )
+convnet = CoordConv()
+
+STEPS=10000
+SCHEDULE = 'cos'
 
 if __name__ =="__main__":
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
-    gen = JigsawGenerator()
+    gen = JigsawGenerator(steps=STEPS, schedule=SCHEDULE)
     dl = DataLoader(gen, batch_size=256, pin_memory=True, num_workers=4)
     convnet = convnet.to(device)
     convnet.train()
@@ -129,6 +144,6 @@ if __name__ =="__main__":
         optim.zero_grad()
         loss.backward()
         optim.step()
-        if i == 4000: # ~5 mins training
+        if i == 40000: # train for a bit
             break
     torch.save(convnet.state_dict(), "weights_jig-trans.pt")

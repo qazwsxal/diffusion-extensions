@@ -1,0 +1,3 @@
+[submodule "denoising-diffusion-pytorch"]
+	path = denoising-diffusion-pytorch
+	url = https://github.com/qazwsxal/denoising-diffusion-pytorch.git
