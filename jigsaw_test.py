@@ -6,7 +6,7 @@ from jigsaw_translate import *
 from matplotlib.collections import LineCollection
 
 
-device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cpu")
 
 convnet.load_state_dict(torch.load("weights_jig-trans.pt", map_location=device))
 convnet = convnet.to(device)

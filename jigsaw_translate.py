@@ -1,7 +1,8 @@
 from PIL import Image, ImageDraw
 import numpy as np
 import torch
-from diffusion import GaussianDiffusionProcess
+from models import SinusoidalPosEmb
+from diffusion import ProjectedGaussianDiffusion
 from torch.utils.data import IterableDataset, DataLoader
 from torchvision.transforms.functional import to_tensor
 import torch.nn as nn
@@ -41,35 +42,12 @@ class JigsawPuzzle(object):
         return image
 
 
-class JigsawGenerator(IterableDataset):
-    def __init__(self, size=128, square_size = 32, circle_size = 32, steps=500, schedule='linear'):
-        self.size = size
-        self.square_size = square_size
-        self.circle_size = circle_size
-        self.steps = steps
-        self.process = GaussianDiffusionProcess(steps=steps, schedule=schedule)
-
-    def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is not None:
-            seed = torch.seed() # set seed for torch to non-deteministic value and use it for JigsawPuzzle
-        else:
-            seed = None
-
-        while True:
-            step = torch.randint(0,self.steps, (1,))
-            t = step/self.steps
-            jp = JigsawPuzzle(size=self.size, square_size=self.square_size, circle_size=self.circle_size, seed=seed)
-            offset, eps = self.process.x_t(jp.x_0, step)
-            image = jp.draw_diffuse(offset)
-            yield to_tensor(image), eps, t
-
-
 class CoordConv(nn.Module):
-    def __init__(self, size=128):
+    def __init__(self, size=128, dim=16):
         super().__init__()
+        self.emb = SinusoidalPosEmb(dim)
         self.net = nn.Sequential(
-            nn.Conv2d(6, 32, 3, 1, 1),
+            nn.Conv2d(5+dim, 32, 3, 1, 1),
             nn.ELU(),
             nn.Conv2d(32, 32, 3, 1, 1),
             nn.ELU(),
@@ -115,7 +93,8 @@ class CoordConv(nn.Module):
         coords = torch.stack(torch.meshgrid(lin, lin), dim=0)[None, ...]
         self.register_buffer("coords", coords) # Register as self.coords and make sure tensors get passed to GPU
 
-    def forward(self, x):
+    def forward(self, x, t):
+        t_emb = self.emb(t)
         batchsize = x.shape[0]
         exp_coords = self.coords.expand(batchsize, -1, -1, -1)
         nn_in = torch.cat((x, exp_coords), dim=1)
