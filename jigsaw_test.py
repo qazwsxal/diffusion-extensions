@@ -12,7 +12,7 @@ convnet.load_state_dict(torch.load("weights_jig-trans.pt", map_location=device))
 convnet = convnet.to(device)
 
 # Tracing out several paths to get an idea of what a process could look like:
-process = GaussianDiffusionProcess(steps=STEPS, schedule=SCHEDULE)
+process = ProjectedGaussianDiffusion(convnet, timesteps=STEPS)
 jp1 = JigsawPuzzle(seed=1234)
 x_t, eps = process.x_t(jp1.x_0, process.steps-1)
 x_t = x_t.unsqueeze(0)
