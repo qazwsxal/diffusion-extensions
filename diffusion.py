@@ -23,8 +23,7 @@ def noise_like(shape, device, repeat=False):
 
 class ProjectedGaussianDiffusion(GaussianDiffusion):
     def __init__(self, denoise_fn, timesteps=1000, loss_type='l1', betas = None):
-        super().__init__(denoise_fn, timesteps=timesteps, loss_type=loss_type, betas=betas)
-
+        super().__init__(denoise_fn, image_size=None, timesteps=timesteps, loss_type=loss_type, betas=betas)
 
 
 
@@ -39,7 +38,7 @@ class ProjectedGaussianDiffusion(GaussianDiffusion):
         return model_mean, posterior_variance, posterior_log_variance
 
     @torch.no_grad()
-    def p_sample(self, x, t, projection, clip_denoised=False, repeat_noise=False):
+    def p_sample(self, x, t, clip_denoised=False, repeat_noise=False):
         b, *_, device = *x.shape, x.device
         model_mean, _, model_log_variance = self.p_mean_variance(x=x, t=t, clip_denoised=clip_denoised)
         noise = noise_like(x.shape, device, repeat_noise)
@@ -55,7 +54,7 @@ class ProjectedGaussianDiffusion(GaussianDiffusion):
         img = torch.randn(shape, device=device)
 
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
-            img = self.p_sample(img, torch.full((b,), i, device=device, dtype=torch.long), projection)
+            img = self.p_sample(img, torch.full((b,), i, device=device, dtype=torch.long))
         return img
 
     @torch.no_grad()
@@ -87,7 +86,6 @@ class ProjectedGaussianDiffusion(GaussianDiffusion):
         )
 
     def p_losses(self, x_start, t, noise = None):
-        b, c, h, w = x_start.shape
         noise = default(noise, lambda: torch.randn_like(x_start))
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)

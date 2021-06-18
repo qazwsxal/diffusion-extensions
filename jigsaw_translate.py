@@ -29,7 +29,7 @@ class JigsawPuzzle(object):
         draw.rectangle(list(self.square_coords.ravel()), fill="red")
         draw.ellipse(list(self.circle_coords.ravel()), fill="blue")
         return image
-    def draw_diffuse(self, circ_pos):
+    def __call__(self, circ_pos):
         # We treat the image as being 8 standard deviations wide
         pixel_pos = np.round((self.size * circ_pos / 8)+self.size/2).numpy()
         image = Image.new('RGB', (self.size, self.size), "white")
@@ -97,32 +97,26 @@ class CoordConv(nn.Module):
         t_emb = self.emb(t)
         batchsize = x.shape[0]
         exp_coords = self.coords.expand(batchsize, -1, -1, -1)
-        nn_in = torch.cat((x, exp_coords), dim=1)
+        nn_in = torch.cat((x, exp_coords, t_emb), dim=1)
         return self.net(nn_in)
 
 # Quick and dirty convolutional network
 convnet = CoordConv()
 
-STEPS=10000
-SCHEDULE = 'cos'
+STEPS=1000
 
 if __name__ =="__main__":
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
-    gen = JigsawGenerator(steps=STEPS, schedule=SCHEDULE)
-    dl = DataLoader(gen, batch_size=256, pin_memory=True, num_workers=4)
     convnet = convnet.to(device)
     convnet.train()
     optim = torch.optim.Adam(convnet.parameters(), lr=3e-4)
-    for i, (data) in enumerate(dl):
-        imgs, eps, t = to_device(device, *data, non_blocking=True)
-        # Concat time information
-        nn_in = torch.cat((imgs, t[...,None,None].expand(-1, -1, gen.size, gen.size)), dim=1)
-        out = convnet(nn_in).mean(dim=(-1,-2))
-        loss = F.mse_loss(out, eps)
+    diffusion = ProjectedGaussianDiffusion(convnet)
+    for i in range(40000):
+        jp = JigsawPuzzle()
+        truepos = jp.x_0
+        loss = diffusion(truepos, jp)
         print(loss.item())
         optim.zero_grad()
         loss.backward()
         optim.step()
-        if i == 40000: # train for a bit
-            break
     torch.save(convnet.state_dict(), "weights_jig-trans.pt")
