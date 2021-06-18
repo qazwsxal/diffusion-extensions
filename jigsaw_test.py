@@ -20,7 +20,7 @@ x_T = x_t.detach()
 for i, step in enumerate(range(process.steps-1, -1, -1)):
     print(x_t, jp1.x_0)
     t = torch.tensor(step/process.steps).to(device)
-    pil_image = jp1.draw_diffuse(x_t.detach())
+    pil_image = jp1(x_t.detach())
     pil_image.save(f"images/{i:04}.png")
     img = to_tensor(pil_image).to(device)
     nn_in = torch.cat((img, t[None,None,None].expand( 1, jp1.size, jp1.size)), dim=0)[None]
@@ -36,13 +36,13 @@ for _ in range(3):
     for i, step in enumerate(range(process.steps-1, -1, -1)):
         paths[-1].append(x_t.detach())
         t = torch.tensor(step/process.steps).to(device)
-        pil_image = jp1.draw_diffuse(x_t.detach())
+        pil_image = jp1(x_t.detach())
         img = to_tensor(pil_image).to(device)
         nn_in = torch.cat((img, t[None,None,None].expand( 1, jp1.size, jp1.size)), dim=0)[None]
         out = convnet(nn_in).mean(dim=(-1,-2))
         x_t = process.undiffuse(x_t, out, step)
 data = (torch.stack([torch.cat(x, dim=0) for x in paths], dim=0)/6)*128+64
-plt.imshow(np.asarray(jp1.draw_diffuse(x_T)))
+plt.imshow(np.asarray(jp1(x_T)))
 plt.plot(data[...,0].T, data[...,1].T, alpha=0.2)
 print('aaa')
 
@@ -54,7 +54,7 @@ grid = torch.stack(torch.meshgrid((xdim,ydim)),dim=-1).reshape((-1,2)).to(device
 res = []
 t = torch.tensor(1)*0.1
 for pos in grid:
-    pil_image = jp1.draw_diffuse(pos)
+    pil_image = jp1(pos)
     img = to_tensor(pil_image).to(device)
     nn_in = torch.cat((img, t[None,None,None].expand( 1, jp1.size, jp1.size)), dim=0)[None]
     res.append(convnet(nn_in).mean(dim=(-1,-2)).detach())
