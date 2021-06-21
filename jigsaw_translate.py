@@ -33,7 +33,7 @@ class JigsawPuzzle(nn.Module):
 
     def _draw(self, circ_pos):
         # We treat the image as being 8 standard deviations wide
-        pixel_pos = np.round((self.size * circ_pos / 8) + self.size / 2).numpy()
+        pixel_pos = np.round((self.size * circ_pos.cpu() / 8) + self.size / 2).numpy()
         image = Image.new('RGB', (self.size, self.size), "white")
         draw = ImageDraw.Draw(image)
         draw.rectangle(list(self.square_coords.ravel()), fill="red")
