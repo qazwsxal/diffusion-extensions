@@ -5,8 +5,8 @@
 
 
 #SBATCH -p "res-gpu-small"
-#SBATCH --qos="debug"
-#SBATCH -t 0-02
+#SBATCH --qos="short"
+#SBATCH -t 2-00
 
 # Source the bash profile (required to use the module command)
 source /etc/profile

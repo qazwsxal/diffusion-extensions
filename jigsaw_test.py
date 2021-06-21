@@ -4,6 +4,9 @@ from matplotlib import cm
 import numpy as np
 from jigsaw_translate import *
 from matplotlib.collections import LineCollection
+from tqdm import tqdm
+from PIL import Image
+from torchvision.transforms.functional import to_pil_image
 
 
 device = torch.device("cpu")
@@ -14,18 +17,21 @@ convnet = convnet.to(device)
 # Tracing out several paths to get an idea of what a process could look like:
 process = ProjectedGaussianDiffusion(convnet, timesteps=STEPS)
 jp1 = JigsawPuzzle(seed=1234)
-x_t, eps = process.x_t(jp1.x_0, process.steps-1)
-x_t = x_t.unsqueeze(0)
-x_T = x_t.detach()
-for i, step in enumerate(range(process.steps-1, -1, -1)):
-    print(x_t, jp1.x_0)
-    t = torch.tensor(step/process.steps).to(device)
-    pil_image = jp1(x_t.detach())
-    pil_image.save(f"images/{i:04}.png")
-    img = to_tensor(pil_image).to(device)
-    nn_in = torch.cat((img, t[None,None,None].expand( 1, jp1.size, jp1.size)), dim=0)[None]
-    out = convnet(nn_in).mean(dim=(-1,-2))
-    x_t = process.undiffuse(x_t, out, step)
+
+samplelist = []
+process.projection = jp1
+device = process.betas.device
+batch = 16
+
+samples = torch.randn((batch,2), device=device)
+samplelist.append(samples)
+for i in tqdm(reversed(range(0, process.num_timesteps)), desc='sampling loop time step', total=process.num_timesteps):
+    samples = process.p_sample(samples, torch.full((batch,), i, device=device, dtype=torch.long))
+    samplelist.append(samples)
+
+for i, x in reversed(list(enumerate(samplelist))):
+    im = to_pil_image(jp1(x).mean(dim=0))
+    im.save(f"images/{i:04}.png")
 
 # Repeat, saving intermediate positions,
 # no drawing, just plotting paths
