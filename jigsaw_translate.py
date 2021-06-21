@@ -50,7 +50,7 @@ class JigsawPuzzle(nn.Module):
         elif posshape[-1] == 2:
             flatpos = circ_positions.reshape(-1, 2)
             images = torch.stack([self._draw(x) for x in flatpos], dim=0)
-            return images.reshape(*posshape[:-1], *images.shape[-3:]).to(self.x_0.device)
+            return images.reshape(*posshape[:-1], *images.shape[-3:]).to(self.x_0.device, non_blocking=True)
 
 
 
@@ -112,7 +112,7 @@ class CoordConv(nn.Module):
         exp_coords = self.coords.expand(batchsize, -1, -1, -1)
         exp_t_emb = t_emb[...,None,None].expand(-1,-1, *x.shape[-2:])
         nn_in = torch.cat((x, exp_coords, exp_t_emb), dim=1)
-        return self.net(nn_in)
+        return self.net(nn_in).mean(dim=(-1,-2))
 
 # Quick and dirty convolutional network
 convnet = CoordConv()
@@ -123,12 +123,12 @@ if __name__ =="__main__":
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     convnet = convnet.to(device)
     convnet.train()
-    optim = torch.optim.Adam(convnet.parameters(), lr=3e-4)
-    diffusion = ProjectedGaussianDiffusion(convnet).to(device)
+    process = ProjectedGaussianDiffusion(convnet, loss_type='l2').to(device)
+    optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=3e-4)
     for i in range(40000):
-        jp = JigsawPuzzle().to(device)
+        jp = JigsawPuzzle().to(device, non_blocking=True)
         truepos = jp.x_0
-        loss = diffusion(truepos.repeat(BATCH,1), jp)
+        loss = process(truepos.repeat(BATCH, 1), jp)
         print(loss.item())
         optim.zero_grad()
         loss.backward()
