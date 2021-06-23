@@ -3,6 +3,7 @@ from operator import matmul
 
 import torch
 
+
 def rmat2six(x: torch.Tensor) -> torch.Tensor:
     # Drop last column
     return torch.flatten(x[..., :2, :], -2, -1)
@@ -54,7 +55,7 @@ def arb_axis_amat_gen(point_1, point_2, s_ang, c_ang):
     # Calculate axis of rotation and normalise
     rot_axis = point_1 - point_2
     rot_mat = torch.eye(4).to(point_1)
-    rot_mat[:3,:3] = aa_to_rmat(rot_axis, s_ang, c_ang)
+    rot_mat[:3, :3] = aa_to_rmat(rot_axis, s_ang, c_ang)
     mat_ops.insert(0, rot_mat)
     # Translate everything back from origin
     translate2 = torch.eye(4, device=point_1.device)
@@ -67,26 +68,67 @@ def arb_axis_amat_gen(point_1, point_2, s_ang, c_ang):
     return mat
 
 
-def aa_to_rmat(rot_axis, s_ang, c_ang):
-    '''Generates a rotation matrix (4x4, no translation) from axis-angle form
+def aa_to_rmat(rot_axis, ang):
+    '''Generates a rotation matrix (3x3) from axis-angle form
 
         `rot_axis`: Axis to rotate around, defined as vector from origin.
-        `s_ang`: sine of rotation angle
-        `c_ang`: cosine of rotation angle
+        `ang`: rotation angle
         '''
     # Gnarly axis-angle to matrix rotation thing, check wiki.
+    s_ang, c_ang = ang.sin(), ang.cos()
     rot_axis_n = rot_axis / rot_axis.norm(dim=-1, keepdim=True)
     I = torch.eye(3, device=rot_axis_n.device).expand((*rot_axis.shape[:-1], -1, -1))
     cpm = torch.zeros((*rot_axis.shape[:-1], 3, 3), device=rot_axis_n.device)
     cpm[..., 2, 1] = rot_axis_n[..., 0]
     cpm[..., 2, 0] = -rot_axis_n[..., 1]
     cpm[..., 1, 0] = rot_axis_n[..., 2]
+    # Skew symmetric matrix
     cpm += -cpm.transpose(-1, -2)
-    op = rot_axis_n[...,:3, None] * rot_axis_n[..., :3, None].transpose(-1, -2)
+    op = rot_axis_n[..., :3, None] * rot_axis_n[..., :3, None].transpose(-1, -2)
     # Angle is in sin-cosine form, so we don't need to calculate them again
     rot_mat = c_ang[..., None, None] * I + s_ang[..., None, None] * cpm + (1 - c_ang[..., None, None]) * op
     rot_mat_o = orthogonalise(rot_mat)
     return rot_mat_o
+
+
+def rmat_to_aa(r_mat):
+    vals, vecs = torch.eig(r_mat, True)
+    for i, row in enumerate(vals):
+        if torch.allclose(row, torch.tensor([1.0, 0.0], device=row.device)):
+            axis = vecs[:,i]
+            break
+    angle =torch.acos((torch.trace(r_mat)-1)/2)
+    # At this point, the determined axis and angles might not match the sign of what we want,
+    # Check if we can recover the r_mat properly:
+    if torch.allclose(aa_to_rmat(axis, angle), r_mat):
+        return axis, angle
+    else:
+        return -axis, angle
+    print('aaaaa')
+
+
+def logRotMat(r_mat: torch.Tensor):
+    cos_angle = (torch.einsum('...ii', r_mat) - 1) / 2
+    angle = cos_angle.acos()
+    sin_angle = angle.sin()
+    log_r_mat = (angle / (2 * sin_angle))[..., None, None] * (r_mat.transpose(-1, -2) - r_mat)
+
+    return log_r_mat
+
+
+def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
+    ''' Weighted interpolation between rot_a and rot_b
+
+    '''
+    # Treat rot_b = rot_a @ rot_c
+    # rot_a^-1 @ rot_a = I
+    # rot_a^-1 @ rot_b = rot_a^-1 @ rot_a @ rot_c = I @ rot_c
+    rot_c = rot_a.transpose(-1, -2) @ rot_b
+    axis, angle = rmat_to_aa(rot_c)
+    # once we have axis-angle forms, determine intermediate angles.
+    i_angle = weight * angle
+    rot_c_i = aa_to_rmat(axis, i_angle)
+    return rot_a @ rot_c_i
 
 
 def orthogonalise(mat):
@@ -113,6 +155,5 @@ if __name__ == "__main__":
     res = rmat_cosine_dist(m1, m2)
     res2 = rmat_cosine_dist(m1, m1)
     res3 = rmat_cosine_dist(m2, m2)
-    print(res)
-    print(res2)
-    print(res3)
+    weight = 0.2
+    so3_lerp(m1[0, 0], m2[0, 0], weight)
