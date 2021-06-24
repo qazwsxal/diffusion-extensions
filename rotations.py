@@ -92,19 +92,21 @@ def aa_to_rmat(rot_axis, ang):
 
 
 def rmat_to_aa(r_mat):
-    vals, vecs = torch.eig(r_mat, True)
-    for i, row in enumerate(vals):
-        if torch.allclose(row, torch.tensor([1.0, 0.0], device=row.device)):
-            axis = vecs[:,i]
-            break
-    angle =torch.acos((torch.trace(r_mat)-1)/2)
+    skew_mat = 0.5 * (r_mat - r_mat.transpose(-1,-2))
+    sk_vec = torch.empty((*skew_mat.shape[:-2], 3))
+    sk_vec[...,0] = skew_mat[...,2,1]
+    sk_vec[...,1] = -skew_mat[..., 2,0]
+    sk_vec[...,2] = skew_mat[...,1,0]
+    s_angle = sk_vec.norm(dim=-1)
+    axis = sk_vec/s_angle
+    c_angle =(torch.einsum('...ii', r_mat)-1)/2
+    angle = torch.atan2(s_angle, c_angle)
     # At this point, the determined axis and angles might not match the sign of what we want,
     # Check if we can recover the r_mat properly:
     if torch.allclose(aa_to_rmat(axis, angle), r_mat):
         return axis, angle
     else:
         return -axis, angle
-    print('aaaaa')
 
 
 def logRotMat(r_mat: torch.Tensor):
