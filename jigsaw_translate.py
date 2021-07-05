@@ -9,20 +9,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from util import to_device
+
+
 class JigsawPuzzle(nn.Module):
     def __init__(self, size=128, square_size=32, circle_size=32, seed=None):
         super().__init__()
         self.size = size
         self.circle_size = circle_size
         self.rng = np.random.default_rng(seed=seed)
-        self.square_pos = self.rng.integers((circle_size + square_size)//2,
-                                            size - (circle_size + square_size)//2,
+        self.square_pos = self.rng.integers((circle_size + square_size) // 2,
+                                            size - (circle_size + square_size) // 2,
                                             size=2)
-        self.circle_pos = self.rng.integers(-circle_size//2, circle_size//2, size=2) + self.square_pos
+        self.circle_pos = self.rng.integers(-circle_size // 2, circle_size // 2, size=2) + self.square_pos
 
-        self.register_buffer("x_0", (torch.from_numpy(self.circle_pos)-self.size/2) * 8.0/self.size)
-        self.square_coords = np.array([self.square_pos - square_size//2, self.square_pos + square_size//2])
-        self.circle_coords = np.array([self.circle_pos - circle_size//2, self.circle_pos + circle_size//2])
+        self.register_buffer("x_0", (torch.from_numpy(self.circle_pos) - self.size / 2) * 8.0 / self.size)
+        self.square_coords = np.array([self.square_pos - square_size // 2, self.square_pos + square_size // 2])
+        self.circle_coords = np.array([self.circle_pos - circle_size // 2, self.circle_pos + circle_size // 2])
 
     def draw_true(self):
         image = Image.new('RGB', (self.size, self.size), "white")
@@ -53,6 +55,7 @@ class JigsawPuzzle(nn.Module):
             return images.reshape(*posshape[:-1], *images.shape[-3:]).to(self.x_0.device, non_blocking=True)
 
 
+# Quick and dirty convolutional network
 
 
 class CoordConv(nn.Module):
@@ -60,7 +63,7 @@ class CoordConv(nn.Module):
         super().__init__()
         self.emb = SinusoidalPosEmb(dim)
         self.net = nn.Sequential(
-            nn.Conv2d(5+dim, 32, 3, 1, 1),
+            nn.Conv2d(5 + dim, 32, 3, 1, 1),
             nn.ELU(),
             nn.Conv2d(32, 32, 3, 1, 1),
             nn.ELU(),
@@ -101,29 +104,29 @@ class CoordConv(nn.Module):
             nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(32, 2, 3, 1, 1),
             )
-        lin = torch.linspace(-1,1, steps=size)
+        lin = torch.linspace(-1, 1, steps=size)
 
         coords = torch.stack(torch.meshgrid(lin, lin), dim=0)[None, ...]
-        self.register_buffer("coords", coords) # Register as self.coords and make sure tensors get passed to GPU
+        self.register_buffer("coords", coords)  # Register as self.coords and make sure tensors get passed to GPU
 
     def forward(self, x, t):
         t_emb = self.emb(t)
         batchsize = x.shape[0]
         exp_coords = self.coords.expand(batchsize, -1, -1, -1)
-        exp_t_emb = t_emb[...,None,None].expand(-1,-1, *x.shape[-2:])
+        exp_t_emb = t_emb[..., None, None].expand(-1, -1, *x.shape[-2:])
         nn_in = torch.cat((x, exp_coords, exp_t_emb), dim=1)
-        return self.net(nn_in).mean(dim=(-1,-2))
+        return self.net(nn_in).mean(dim=(-1, -2))
 
-# Quick and dirty convolutional network
+
 convnet = CoordConv()
 
-STEPS=1000
-BATCH=256
-if __name__ =="__main__":
+STEPS = 1000
+BATCH = 256
+if __name__ == "__main__":
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     convnet = convnet.to(device)
     convnet.train()
-    process = ProjectedGaussianDiffusion(convnet, loss_type='l2').to(device)
+    process = ProjectedGaussianDiffusion(convnet, loss_type='l2', timesteps=STEPS).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=3e-4)
     for i in range(40000):
         jp = JigsawPuzzle().to(device, non_blocking=True)
