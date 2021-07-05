@@ -1,6 +1,6 @@
 from functools import reduce
 from operator import matmul
-
+from typing import Tuple
 import torch
 
 
@@ -86,12 +86,23 @@ def aa_to_rmat(rot_axis, ang):
     cpm += -cpm.transpose(-1, -2)
     op = rot_axis_n[..., :3, None] * rot_axis_n[..., :3, None].transpose(-1, -2)
     # Angle is in sin-cosine form, so we don't need to calculate them again
-    rot_mat = c_ang[..., None, None] * I + s_ang[..., None, None] * cpm + (1 - c_ang[..., None, None]) * op
+    rot_mat = c_ang[..., None] * I + s_ang[..., None] * cpm + (1 - c_ang[..., None]) * op
     rot_mat_o = orthogonalise(rot_mat)
     return rot_mat_o
 
 
-def rmat_to_aa(r_mat):
+# We use atan2 instead of acos here dut to better numerical stability.
+# it means we get nicer behaviour around 0 degrees
+# More effort to derive sin terms
+# but as we're dealing with small angles a lot,
+# the tradeoff is worth it.
+def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
+    '''Calculates axis and angle of rotation from a rotation matrix.
+
+        returns angles in [0,pi] range.
+
+        `r_mat`: rotation matrix.
+        '''
     skew_mat = 0.5 * (r_mat - r_mat.transpose(-1,-2))
     sk_vec = torch.empty((*skew_mat.shape[:-2], 3))
     sk_vec[...,0] = skew_mat[...,2,1]
@@ -109,13 +120,30 @@ def rmat_to_aa(r_mat):
         return -axis, angle
 
 
-def logRotMat(r_mat: torch.Tensor):
-    cos_angle = (torch.einsum('...ii', r_mat) - 1) / 2
-    angle = cos_angle.acos()
-    sin_angle = angle.sin()
-    log_r_mat = (angle / (2 * sin_angle))[..., None, None] * (r_mat.transpose(-1, -2) - r_mat)
+def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
+    skew_mat = (r_mat - r_mat.transpose(-1, -2))
+    sk_vec = torch.empty((*skew_mat.shape[:-2], 3))
+    sk_vec[..., 0] = skew_mat[..., 2, 1]
+    sk_vec[..., 1] = -skew_mat[..., 2, 0]
+    sk_vec[..., 2] = skew_mat[..., 1, 0]
+    s_angle = (sk_vec/2).norm(dim=-1)
+    c_angle = (torch.einsum('...ii', r_mat) - 1) / 2
+    angle = torch.atan2(s_angle, c_angle)
+    scale = (angle / (2 * s_angle))
+    # if s_angle = 0, i.e. rotation by 0 or pi, we get NaNs
+    # by definition, scale values are 0 if rotating by 0.
+    scale[angle==0] = 0
+    # This also breaks down if rotating by pi, but idk how to fix that.
+    log_r_mat = scale[..., None, None] * skew_mat
 
     return log_r_mat
+
+
+def rmat_dist(input, target):
+    '''Calculates the geodesic distance between two (batched) rotation matrices.
+
+    '''
+    return log_rmat(input.transpose(-1,-2) @ target).norm(p='fro') # Frobenius nrm
 
 
 def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
@@ -142,9 +170,10 @@ def orthogonalise(mat):
     We then round the values of S to [-1, 0, +1],
     making U @ S_rounded @ V.T an orthonormal matrix close to the original.
     """
+    # TODO fix this so it wo
     orth_mat = mat.clone()
-    u, s, v = torch.svd(mat[:3, :3])
-    orth_mat[:3, :3] = u @ torch.diag(s.round()) @ v.T
+    u, s, v = torch.svd(mat[..., :3, :3])
+    orth_mat[..., :3, :3] = u @ torch.diag_embed(s.round()) @ v.transpose(-1,-2)
     return orth_mat
 
 
@@ -158,4 +187,6 @@ if __name__ == "__main__":
     res2 = rmat_cosine_dist(m1, m1)
     res3 = rmat_cosine_dist(m2, m2)
     weight = 0.2
-    so3_lerp(m1[0, 0], m2[0, 0], weight)
+    out = so3_lerp(m1[0, 0], m2[0, 0], weight)
+    log_m1 = log_rmat(m1[0,0])
+    log_rmat(torch.eye(3))
