@@ -15,6 +15,7 @@ class IsotropicGaussianSO3(Distribution):
         self._mean = mean.to(eps)
         self._mean_inv = self._mean.permute(-1, -2)  # orthonormal so inverse = Transpose
         pdf_sample_locs = pi * torch.linspace(0, 1.0, 1000)[:, None] ** 3.0  # Pack more samples near 0
+        pdf_sample_locs = pdf_sample_locs.to(self.eps)
         pdf_sample_vals = self._eps_ft(pdf_sample_locs)
         pdf_val_sums = pdf_sample_vals[:-1] + pdf_sample_vals[1:]
         pdf_loc_diffs = torch.diff(pdf_sample_locs, dim=0)
@@ -29,7 +30,7 @@ class IsotropicGaussianSO3(Distribution):
         axes = torch.randn((*sample_shape, *self.eps.shape, 3)).to(self.eps)
         axes = axes / axes.norm(dim=-1, keepdim=True)
         # Inverse transform sampling based on numerical approximation of CDF
-        unif = torch.rand((*sample_shape, *self.eps.shape))
+        unif = torch.rand((*sample_shape, *self.eps.shape), device=self.trap.device)
         idx_1 = (self.trap < unif).sum(dim=0)
         idx_0 = idx_1 - 1
         trap_start = torch.gather(self.trap, 0, idx_0[None])
@@ -51,7 +52,7 @@ class IsotropicGaussianSO3(Distribution):
     def _eps_ft(self, t: torch.Tensor) -> torch.Tensor:
         maxdims = max(len(self.eps.shape), len(t.shape))
         # This is an infinite sum, approximate with 10/eps values
-        l_count = min(np.round(10 / self.eps.min() ** 2).item(), 1e6)
+        l_count = round(min((10 / self.eps.min() ** 2).item(), 1e6))
         if l_count == 1e6:
             print("Very small eps!", self.eps.min())
         l = torch.arange(l_count).reshape((-1, *([1] * maxdims))).to(self.eps)
@@ -76,7 +77,8 @@ class IsotropicGaussianSO3(Distribution):
 
 
 if __name__ == "__main__":
-    epsilon = torch.tensor([0.03, 0.1, 0.5, 0.9, 3.0])
+    device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
+    epsilon = torch.tensor([0.03, 0.1, 0.5, 0.9, 3.0]).to(device)
     dist = IsotropicGaussianSO3(epsilon)
     rot = dist.sample()
     print('aaaa')
