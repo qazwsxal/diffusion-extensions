@@ -71,6 +71,27 @@ def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
     out = 1 - (tra - 1) / 2
     return out
 
+
+# See paper
+# Exponentials of skew-symmetric matrices and logarithms of orthogonal matrices
+# https://doi.org/10.1016/j.cam.2009.11.032
+# For most of the derivatons here
+
+@torch.jit.script
+def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
+    skew_mat = (r_mat - r_mat.transpose(-1, -2))
+    sk_vec = skew2vec(skew_mat)
+    s_angle = (sk_vec).norm(p=2, dim=-1)/2
+    c_angle = (torch.einsum('...ii', r_mat) - 1) / 2
+    angle = torch.atan2(s_angle, c_angle)
+    scale = (angle / (2 * s_angle))
+    # if s_angle = 0, i.e. rotation by 0 or pi, we get NaNs
+    # by definition, scale values are 0 if rotating by 0.
+    # This also breaks down if rotating by pi, but idk how to fix that.
+    log_r_mat = scale[..., None, None] * skew_mat
+
+    return log_r_mat
+
 @torch.jit.script
 def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
     '''Generates a rotation matrix (3x3) from axis-angle form
@@ -78,43 +99,11 @@ def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
         `rot_axis`: Axis to rotate around, defined as vector from origin.
         `ang`: rotation angle
         '''
-    # Gnarly axis-angle to matrix rotation thing, check wiki.
-    s_ang, c_ang = ang.sin(), ang.cos()
-    rot_axis_n = rot_axis / rot_axis.norm(p=2, dim=-1, keepdim=True)
-    I = torch.diag_embed(torch.ones_like(rot_axis_n))
-    cpm = vec2skew(rot_axis_n)
-    # Skew symmetric matrix
-    op = rot_axis_n[..., :3, None] * rot_axis_n[..., :3, None].transpose(-1, -2)
-    # Angle is in sin-cosine form, so we don't need to calculate them again
-    rot_mat = c_ang[..., None] * I + s_ang[..., None] * cpm + (1 - c_ang[..., None]) * op
-    rot_mat_o = orthogonalise(rot_mat)
-    return rot_mat_o
-
-@torch.jit.script
-def arb_axis_amat_gen(point_1, point_2, ang):
-    '''Generates an affine matrix defining a rotation about the axis specified by point_1 and point 2
-
-    `point_1`: Point in 3D space
-    `point_2`: Point in 3D space
-    `s_ang`: sine of rotation angle
-    `c_ang`: cosine of rotation angle
-    '''
-    # Translate everything to origin
-    translate = torch.eye(4, device=point_1.device)
-    translate[:3, 3] = -point_1[:3]
-    # Calculate axis of rotation and normalise
-    rot_axis = point_1 - point_2
-    rot_mat = torch.eye(4).to(point_1)
-    rot_mat[:3, :3] = aa_to_rmat(rot_axis, ang)
-    # Translate everything back from origin
-    translate2 = torch.eye(4, device=point_1.device)
-    translate2[:3, 3] = point_1[:3]
-    # Reduce to single matrix.
-    mat = translate2 @ rot_mat @ translate
-    # mat[:3,:3] should be an orthogonal matrix.
-    mat = orthogonalise(mat)
-    return mat
-
+    rot_axis_n = rot_axis/rot_axis.norm(p=2, dim=-1, keepdim=True)
+    sk_mats = vec2skew(rot_axis_n)
+    log_rmats = sk_mats * ang[...,None]
+    rot_mat = torch.matrix_exp(log_rmats)
+    return rot_mat
 
 
 # We use atan2 instead of acos here dut to better numerical stability.
@@ -130,33 +119,12 @@ def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
 
         `r_mat`: rotation matrix.
         '''
-    skew_mat = 0.5 * (r_mat - r_mat.transpose(-1,-2))
-    sk_vec = skew2vec(skew_mat)
-    s_angle = sk_vec.norm(p=2, dim=-1)
-    axis = sk_vec/s_angle
-    c_angle =(torch.einsum('...ii', r_mat)-1)/2
-    angle = torch.atan2(s_angle, c_angle)
-    # At this point, the determined axis and angles might not match the sign of what we want,
-    # Check if we can recover the r_mat properly:
-    if torch.allclose(aa_to_rmat(axis, angle), r_mat):
-        return axis, angle
-    else:
-        return -axis, angle
+    log_mat = log_rmat(r_mat)
+    skew_vec = skew2vec(log_mat)
+    angle = skew_vec.norm(p=2, dim=-1, keepdim=True)
+    axis = skew_vec/angle
+    return axis, angle
 
-@torch.jit.script
-def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
-    skew_mat = (r_mat - r_mat.transpose(-1, -2))
-    sk_vec = skew2vec(skew_mat)
-    s_angle = (sk_vec/2).norm(p=2, dim=-1)
-    c_angle = (torch.einsum('...ii', r_mat) - 1) / 2
-    angle = torch.atan2(s_angle, c_angle)
-    scale = (angle / (2 * s_angle))
-    # if s_angle = 0, i.e. rotation by 0 or pi, we get NaNs
-    # by definition, scale values are 0 if rotating by 0.
-    # This also breaks down if rotating by pi, but idk how to fix that.
-    log_r_mat = scale[..., None, None] * skew_mat
-
-    return log_r_mat
 
 @torch.jit.script
 def rmat_dist(input, target):
@@ -195,3 +163,9 @@ if __name__ == "__main__":
     out = so3_lerp(m1[0, 0], m2[0, 0], weight)
     log_m1 = log_rmat(m1[0,0])
     log_rmat(torch.eye(3))
+
+
+    rotvec = torch.tensor([[3.141592654, 0, 0]])
+    log_mat = vec2skew(rotvec)
+    rot_mat = torch.matrix_exp(log_mat)
+    print(rot_mat)
