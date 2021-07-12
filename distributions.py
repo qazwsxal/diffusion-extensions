@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.distributions import Distribution, constraints
 
-from rotations import aa_to_rmat, rmat_to_aa
+from rotations import aa_to_rmat, rmat_to_aa, rmat_dist
 
 
 class IsotropicGaussianSO3(Distribution):
@@ -16,7 +16,12 @@ class IsotropicGaussianSO3(Distribution):
         self._mean_inv = self._mean.permute(-1, -2)  # orthonormal so inverse = Transpose
         pdf_sample_locs = pi * torch.linspace(0, 1.0, 1000)[:, None] ** 3.0  # Pack more samples near 0
         pdf_sample_locs = pdf_sample_locs.to(self.eps)
-        pdf_sample_vals = self._eps_ft(pdf_sample_locs)
+        # Scale by 1-cos(t)/pi for sampling
+        # As we're sampling using axis-angle form
+        # and need to account for the change in density
+        # with respect to angle.
+        pdf_sample_vals = self._eps_ft(pdf_sample_locs) * ((1 - pdf_sample_locs.cos()) / pi)
+        pdf_sample_vals[(pdf_sample_locs == 0).expand_as(pdf_sample_vals)] = 0.0
         pdf_val_sums = pdf_sample_vals[:-1] + pdf_sample_vals[1:]
         pdf_loc_diffs = torch.diff(pdf_sample_locs, dim=0)
         self.trap = (pdf_loc_diffs * pdf_val_sums / 2).cumsum(dim=0)
@@ -31,10 +36,14 @@ class IsotropicGaussianSO3(Distribution):
         axes = axes / axes.norm(dim=-1, keepdim=True)
         # Inverse transform sampling based on numerical approximation of CDF
         unif = torch.rand((*sample_shape, *self.eps.shape), device=self.trap.device)
-        idx_1 = (self.trap < unif).sum(dim=0)
+        idx_1 = (self.trap < unif[..., None, :]).sum(dim=-2)
         idx_0 = idx_1 - 1
-        trap_start = torch.gather(self.trap, 0, idx_0[None])
-        trap_end = torch.gather(self.trap, 0, idx_1[None])
+
+        trap_exp = self.trap[(None,) * len(sample_shape)]
+        idx_0_exp = idx_0[(None,) * (max(len(sample_shape), 1))]
+        idx_1_exp = idx_1[(None,) * (max(len(sample_shape), 1))]
+        trap_start = torch.gather(trap_exp, -2, idx_0_exp)
+        trap_end = torch.gather(trap_exp, -2, idx_1_exp)
         weight = ((unif - trap_start) / (trap_end - trap_start))[0]
         angle_start = self.trap_loc[idx_0][..., 0]
         angle_end = self.trap_loc[idx_1][..., 0]
@@ -53,18 +62,13 @@ class IsotropicGaussianSO3(Distribution):
         maxdims = max(len(self.eps.shape), len(t.shape))
         # This is an infinite sum, approximate with 10/eps values
         l_count = round(min((10 / self.eps.min() ** 2).item(), 1e6))
-        if l_count == 1e6:
+        if l_count >= 1e6:
             print("Very small eps!", self.eps.min())
         l = torch.arange(l_count).reshape((-1, *([1] * maxdims))).to(self.eps)
         inner = self._eps_ft_inner(l, t)
-        vals = inner.sum(dim=0) * ((1 - t.cos()) / pi)
-        vals[(t == 0).expand_as(vals)] = 0.0
+        vals = inner.sum(dim=0)
         return vals
 
-    def _np_pdf(self, t: np.array) -> float:
-        t = torch.from_numpy(t)
-        l_vals = self._eps_ft(t)
-        return l_vals.detach().numpy()
 
     def log_prob(self, rotations):
         _, angles = rmat_to_aa(rotations)
@@ -77,8 +81,35 @@ class IsotropicGaussianSO3(Distribution):
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
-    epsilon = torch.tensor([0.03, 0.1, 0.5, 0.9, 3.0]).to(device)
-    dist = IsotropicGaussianSO3(epsilon)
-    rot = dist.sample()
-    print('aaaa')
+    epsilons = torch.linspace(0.01, 1.0, 10).to(device)
+    dist = IsotropicGaussianSO3(epsilons)
+    rot = dist.rsample()
+    rot.requires_grad = True
+    distance = rmat_dist(rot, torch.eye(3)[None])
+    distance.sum().backward()
+    rotations = dist.sample((1000,))
+    for i,s in enumerate(epsilons):
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+        ax.set_title(f"Epsilon = {s.item()}")
+        ax.scatter(*rotations[:,i, 0,:].T)
+        ax.scatter(*rotations[:,i, 1,:].T)
+        ax.scatter(*rotations[:,i, 2,:].T)
+        ax.set_xlim3d(-1,1)
+        ax.set_ylim3d(-1, 1)
+        ax.set_zlim3d(-1, 1)
+        plt.show()
+    print('aaaaa')
+
+    axis = torch.randn((3,))
+    axis = (axis / axis.norm(dim=-1, p=2, keepdim=True)).repeat(100, 1)
+    axis.requires_grad = True
+    angle = torch.linspace(0.001, pi / 2, steps=100).unsqueeze(-1)
+    angle.requires_grad = True
+    rmats = aa_to_rmat(axis, angle)
+    dist2 = IsotropicGaussianSO3(torch.tensor(0.1))
+    l_probs = dist2.log_prob(rmats)
+    grads = torch.autograd.grad(l_probs.sum(), rmats, retain_graph=True)
+    print('aaaaa')
