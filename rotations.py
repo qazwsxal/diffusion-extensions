@@ -127,12 +127,13 @@ def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
 
 
 @torch.jit.script
-def rmat_dist(input, target):
+def rmat_dist(input: torch.Tensor, target: torch.Tensor)-> torch.Tensor:
     '''Calculates the geodesic distance between two (batched) rotation matrices.
 
     '''
     return log_rmat(input.transpose(-1,-2) @ target).norm(p=2, dim=(-1,-2)) # Frobenius norm
 
+@torch.jit.script
 def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
     ''' Weighted interpolation between rot_a and rot_b
 
@@ -147,6 +148,19 @@ def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
     rot_c_i = aa_to_rmat(axis, i_angle)
     return rot_a @ rot_c_i
 
+@torch.jit.script
+def so3_scale(rmat, scalars):
+    '''Scale the magnitude of a rotation matrix,
+    e.g. a 45 degree rotation scaled by a factor of 2 gives a 90 degree rotation.
+
+    This is the same as taking matrix powers, but pytorch only supports integer exponents
+
+    So instead, we take advantage of the properties of rotation matrices
+    to calculate logarithms easily. and multiply instead.
+    '''
+    logs =  log_rmat(rmat)
+    scaled_logs = logs * scalars[...,None, None]
+    return torch.matrix_exp(scaled_logs)
 
 
 
