@@ -21,7 +21,9 @@ class IsotropicGaussianSO3(Distribution):
         # and need to account for the change in density
         # with respect to angle.
         pdf_sample_vals = self._eps_ft(pdf_sample_locs) * ((1 - pdf_sample_locs.cos()) / pi)
+        # Set to 0.0, otherwise there's a divide by 0 here
         pdf_sample_vals[(pdf_sample_locs == 0).expand_as(pdf_sample_vals)] = 0.0
+        # Trapezoidal intergration
         pdf_val_sums = pdf_sample_vals[:-1] + pdf_sample_vals[1:]
         pdf_loc_diffs = torch.diff(pdf_sample_locs, dim=0)
         self.trap = (pdf_loc_diffs * pdf_val_sums / 2).cumsum(dim=0)
