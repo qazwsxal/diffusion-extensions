@@ -30,7 +30,6 @@ class IsotropicGaussianSO3(Distribution):
         self.trap_loc = pdf_sample_locs[1:]
         super().__init__()
 
-        print('aaa')
 
     def rsample(self, sample_shape=torch.Size()):
         # Consider axis-angle form.
@@ -58,6 +57,7 @@ class IsotropicGaussianSO3(Distribution):
 
     def _eps_ft_inner(self, l, t: torch.Tensor) -> torch.Tensor:
         lt_sin = torch.sin((l + 0.5) * t) / torch.sin(t / 2)
+        lt_sin[..., t == 0.0] = ((l + 0.5)/0.5)[...,0]
         return (2 * l + 1) * torch.exp(-l * (l + 1) * (self.eps ** 2)) * lt_sin
 
     def _eps_ft(self, t: torch.Tensor) -> torch.Tensor:
@@ -103,7 +103,6 @@ if __name__ == "__main__":
         ax.set_ylim3d(-1, 1)
         ax.set_zlim3d(-1, 1)
         plt.show()
-    print('aaaaa')
 
     axis = torch.randn((3,))
     axis = (axis / axis.norm(dim=-1, p=2, keepdim=True)).repeat(100, 1)
@@ -114,4 +113,3 @@ if __name__ == "__main__":
     dist2 = IsotropicGaussianSO3(torch.tensor(0.1))
     l_probs = dist2.log_prob(rmats)
     grads = torch.autograd.grad(l_probs.sum(), rmats, retain_graph=True)
-    print('aaaaa')
