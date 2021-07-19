@@ -8,6 +8,8 @@ from tqdm import tqdm
 from PIL import Image
 from torchvision.transforms.functional import to_pil_image
 
+torch.manual_seed(1234)
+np.random.seed(1234)
 
 device = torch.device("cpu")
 
@@ -21,17 +23,30 @@ jp1 = JigsawPuzzle(seed=1234)
 samplelist = []
 process.projection = jp1
 device = process.betas.device
-batch = 16
+batch = 256
 
-samples = torch.randn((batch,2), device=device)
+samples = torch.randn((batch,2), device=device).detach()
 samplelist.append(samples)
+fig = plt.figure()
 for i in tqdm(reversed(range(0, process.num_timesteps)), desc='sampling loop time step', total=process.num_timesteps):
-    samples = process.p_sample(samples, torch.full((batch,), i, device=device, dtype=torch.long))
+    samples = process.p_sample(samples, torch.full((batch,), i, device=device, dtype=torch.long)).detach()
     samplelist.append(samples)
 
-for i, x in reversed(list(enumerate(samplelist))):
-    im = to_pil_image(jp1(x).mean(dim=0))
+# Render with blue circle far offscreen to show
+im_clean = to_pil_image(jp1(torch.tensor([[99.9,99.9]]))[0])
+
+for i, samples in tqdm(reversed(list(enumerate(samplelist))), total=process.num_timesteps):
+    im = to_pil_image(jp1(samples).mean(dim=0))
     im.save(f"images/{i:04}.png")
+    ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+    ax.set_title(f"Step {i}")
+    ax.set_xlim(-4, 4)
+    ax.set_ylim(-4, 4)
+    ax.set_aspect('equal', adjustable='box')
+    ax.imshow(im_clean, extent=[-4,4,-4,4])
+    ax.scatter(samples[:,0].cpu(), -samples[:,1].cpu(), s=1.5)
+    fig.savefig(f"images/diff_{i:04}.eps", bbox_inches="tight")
+    fig.clear()
 
 # Repeat, saving intermediate positions,
 # no drawing, just plotting paths
@@ -50,7 +65,6 @@ for _ in range(3):
 data = (torch.stack([torch.cat(x, dim=0) for x in paths], dim=0)/6)*128+64
 plt.imshow(np.asarray(jp1(x_T)))
 plt.plot(data[...,0].T, data[...,1].T, alpha=0.2)
-print('aaa')
 
 
 quiv_res = 16

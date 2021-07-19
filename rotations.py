@@ -131,7 +131,12 @@ def rmat_dist(input: torch.Tensor, target: torch.Tensor)-> torch.Tensor:
     '''Calculates the geodesic distance between two (batched) rotation matrices.
 
     '''
-    return log_rmat(input.transpose(-1,-2) @ target).norm(p=2, dim=(-1,-2)) # Frobenius norm
+    print(input)
+    print(target)
+    mul = input.transpose(-1,-2) @ target
+    log_mul = log_rmat(mul)
+    out = log_mul.norm(p=2, dim=(-1, -2))
+    return out  # Frobenius norm
 
 @torch.jit.script
 def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
@@ -141,6 +146,7 @@ def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
     # Treat rot_b = rot_a @ rot_c
     # rot_a^-1 @ rot_a = I
     # rot_a^-1 @ rot_b = rot_a^-1 @ rot_a @ rot_c = I @ rot_c
+    # once we have rot_c, use axis-angle forms to lerp angle
     rot_c = rot_a.transpose(-1, -2) @ rot_b
     axis, angle = rmat_to_aa(rot_c)
     # once we have axis-angle forms, determine intermediate angles.
