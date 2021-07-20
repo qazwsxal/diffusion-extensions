@@ -96,7 +96,7 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(True)
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,))
-    dl = DataLoader(ds, batch_size=1, shuffle=True, num_workers=0, pin_memory=True)
+    dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, pin_memory=True)
     net = RotPredict().to(device)
     process = ProjectedSO3Diffusion(net).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=3e-4)
