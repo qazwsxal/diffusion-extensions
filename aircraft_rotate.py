@@ -101,15 +101,16 @@ if __name__ == "__main__":
     process = ProjectedSO3Diffusion(net).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=3e-4)
     i = 0
-    for data in dl:
-        i += 1
-        proj = PointCloudProj(data.to(device)).to(device)
-        truepos = process.identity
-        loss = process(truepos.repeat(BATCH, 1, 1), proj)
-        print(loss.item())
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
-        if i == 40000:
-            break
+    while i<40000:
+        for data in dl:
+            i += 1
+            proj = PointCloudProj(data.to(device)).to(device)
+            truepos = process.identity
+            loss = process(truepos.repeat(BATCH, 1, 1), proj)
+            print(loss.item())
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            if i == 40000:
+                break
     torch.save(net.state_dict(), "weights_aircraft.pt")
