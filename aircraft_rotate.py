@@ -110,6 +110,6 @@ if __name__ == "__main__":
         optim.zero_grad()
         loss.backward()
         optim.step()
-        if i == 4000:
+        if i == 40000:
             break
     torch.save(net.state_dict(), "weights_aircraft.pt")

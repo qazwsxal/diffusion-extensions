@@ -175,7 +175,8 @@ class ProjectedSO3Diffusion(ProjectedGaussianDiffusion):
             eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
             noise = IsotropicGaussianSO3(eps).sample()
 
-        x_blend = so3_scale(x_start, extract(self.sqrt_alphas_cumprod, t, t.shape))
+        scale = extract(self.sqrt_alphas_cumprod, t, t.shape)
+        x_blend = so3_scale(x_start, scale)
         return x_blend @ noise
 
     def p_losses(self, x_start, t, noise = None):
@@ -187,7 +188,6 @@ class ProjectedSO3Diffusion(ProjectedGaussianDiffusion):
 
         descaled_noise = so3_scale(noise, 1/eps)
         distance = rmat_dist(x_recon, descaled_noise)
-        assert (distance > 0).all()
         loss = (distance ** 2).mean()
 
         return loss

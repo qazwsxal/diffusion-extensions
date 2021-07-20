@@ -85,6 +85,7 @@ def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
     c_angle = (torch.einsum('...ii', r_mat) - 1) / 2
     angle = torch.atan2(s_angle, c_angle)
     scale = (angle / (2 * s_angle))
+    scale[angle==0.0] = 0.0
     # if s_angle = 0, i.e. rotation by 0 or pi, we get NaNs
     # by definition, scale values are 0 if rotating by 0.
     # This also breaks down if rotating by pi, but idk how to fix that.
@@ -131,8 +132,6 @@ def rmat_dist(input: torch.Tensor, target: torch.Tensor)-> torch.Tensor:
     '''Calculates the geodesic distance between two (batched) rotation matrices.
 
     '''
-    print(input)
-    print(target)
     mul = input.transpose(-1,-2) @ target
     log_mul = log_rmat(mul)
     out = log_mul.norm(p=2, dim=(-1, -2))
@@ -166,7 +165,8 @@ def so3_scale(rmat, scalars):
     '''
     logs =  log_rmat(rmat)
     scaled_logs = logs * scalars[...,None, None]
-    return torch.matrix_exp(scaled_logs)
+    out = torch.matrix_exp(scaled_logs)
+    return out
 
 
 
