@@ -14,7 +14,6 @@ module unload cuda
 module load cuda/11.1
 
 source .venv/bin/activate
-export HDF5_USE_FILE_LOCKING=FALSE
-# export PYTORCH_JIT=0
-# export CUDA_LAUNCH_BLOCKING=1
-python3 -u aircraft_rotate.py
+export PYTORCH_JIT=0
+export CUDA_LAUNCH_BLOCKING=1
+python3 -u so3_train.py

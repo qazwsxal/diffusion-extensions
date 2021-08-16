@@ -59,47 +59,75 @@ class PointCloudProj(nn.Module):
 
 
 class RotPredict(nn.Module):
-    def __init__(self, d_model=512, nhead=4, layers=6):
+    def __init__(self, d_model=1024, nhead=4, layers=6, out_type="backprop"):
         super().__init__()
+        self.out_type = out_type
+        if out_type in ["skewvec", "backprop"]:
+            d_out = 3
+        else:
+            RuntimeError(f"Unexpected out_type: {out_type}")
         self.recip_sqrt_dim = 1 / np.sqrt(d_model)
         enc_layer = nn.TransformerEncoderLayer(d_model, nhead)
-        self.position_siren = Siren(in_channels=3, out_channels=d_model, scale=30, post_scale=True)
-        self.time_embedding = SinusoidalPosEmb(d_model)
+        self.position_siren = Siren(in_channels=3, out_channels=d_model//2, scale=30)
+        self.time_embedding = SinusoidalPosEmb(d_model//2)
         self.encoder = nn.TransformerEncoder(enc_layer, layers)
-        self.out_query = nn.Linear(d_model, d_model)
-        self.out_key = nn.Linear(d_model, d_model)
-        self.out_value = nn.Linear(d_model, d_model)
-        self.out_linear = nn.Linear(d_model, 6)
+        if self.out_type == "skewvec":
+            self.out_query = nn.Linear(d_model//2, d_model)
+            self.out_key = nn.Linear(d_model, d_model)
+            self.out_value = nn.Linear(d_model, d_model)
+        self.out_net = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_out),
+            )
 
     def forward(self, x, t):
         x_emb = self.position_siren(x)
+        t_emb = self.time_embedding(t)
+        t_in = torch.cat((x_emb, t_emb[:,None,:].expand(x_emb.shape)), dim=2)
         # Transpose batch and sequence dimension
         # Because we're using a version of PT that doesn't support
         # Batch first.
-        x_enc = self.encoder(x_emb.transpose(0, 1)).transpose(0, 1)
-        t_emb = self.time_embedding(t)
-
-        # Manual single-token attention for final prediction
-        Q = self.out_query(t_emb)
-        K = self.out_key(x_enc)
-        V = self.out_value(x_enc)
-        t_out = torch.softmax(Q @ K.transpose(-1, -2) * self.recip_sqrt_dim, dim=-1) @ V
-        out = self.out_linear(F.elu(t_out))
-        out = out[..., 0, :]  # Drop sequence/token dimension
-        return six2rmat(out)
+        encoding = self.encoder(t_in.transpose(0, 1)).transpose(0, 1)
 
 
-BATCH = 4
+
+
+        if self.out_type == "skewvec":
+            # Manual single-token attention for final prediction
+            Q = self.out_query(torch.ones_like(t_emb[:, None, :]))
+            K = self.out_key(encoding)
+            V = self.out_value(encoding)
+            t_out = torch.softmax(Q @ K.transpose(-1, -2) * self.recip_sqrt_dim, dim=-1) @ V
+            t_out = t_out[..., 0, :]  # Drop sequence/token dimension
+        elif self.out_type == "backprop":
+            t_out = encoding
+
+        out = self.out_net(t_out)
+        return out
+
+
+BATCH = 8
 
 if __name__ == "__main__":
+    import wandb
+    wandb.init(project='ProjectedSO3Diffusion', entity='qazwsxal')
 
     torch.autograd.set_detect_anomaly(True)
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,))
     dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, pin_memory=True)
     net = RotPredict().to(device)
+    net.train()
+    wandb.watch(net)
     process = ProjectedSO3Diffusion(net).to(device)
-    optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=3e-4)
+    optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=1e-5)
     i = 0
     while i<40000:
         for data in dl:
@@ -111,6 +139,9 @@ if __name__ == "__main__":
             optim.zero_grad()
             loss.backward()
             optim.step()
+            if i % 10:
+                pass
+                wandb.log({"loss": loss})
             if i == 40000:
                 break
     torch.save(net.state_dict(), "weights_aircraft.pt")

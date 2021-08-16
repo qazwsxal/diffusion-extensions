@@ -104,7 +104,7 @@ def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
     sk_mats = vec2skew(rot_axis_n)
     log_rmats = sk_mats * ang[...,None]
     rot_mat = torch.matrix_exp(log_rmats)
-    return rot_mat
+    return orthogonalise(rot_mat)
 
 
 # We use atan2 instead of acos here dut to better numerical stability.
