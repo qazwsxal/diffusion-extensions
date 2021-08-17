@@ -3,7 +3,7 @@
 #SBATCH -c 4
 #SBATCH --gres=gpu:1
 
-
+#SBATCH --exclude="gpu[0-6]"
 #SBATCH -p "res-gpu-small"
 #SBATCH --qos="short"
 #SBATCH -t 2-00

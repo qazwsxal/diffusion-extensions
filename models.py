@@ -19,6 +19,14 @@ class SinusoidalPosEmb(nn.Module):
         return emb
 
 
+class ResLayer(nn.Module):
+    def __init__(self, layer: nn.Module):
+        super().__init__()
+        self.layer = layer
+
+    def forward(self, x):
+        return x+self.layer(x)
+
 class Siren(nn.Module):
     """
     Encodes spatial/temporal dimensions as SIREN representation

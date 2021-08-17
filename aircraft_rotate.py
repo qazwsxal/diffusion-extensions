@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from diffusion import ProjectedSO3Diffusion
-from models import SinusoidalPosEmb, Siren
+from models import SinusoidalPosEmb, Siren, ResLayer
 from rotations import six2rmat
 
 
@@ -59,7 +59,7 @@ class PointCloudProj(nn.Module):
 
 
 class RotPredict(nn.Module):
-    def __init__(self, d_model=1024, nhead=4, layers=6, out_type="backprop"):
+    def __init__(self, d_model=512, nhead=4, layers=12, out_type="backprop"):
         super().__init__()
         self.out_type = out_type
         if out_type in ["skewvec", "backprop"]:
@@ -68,36 +68,30 @@ class RotPredict(nn.Module):
             RuntimeError(f"Unexpected out_type: {out_type}")
         self.recip_sqrt_dim = 1 / np.sqrt(d_model)
         enc_layer = nn.TransformerEncoderLayer(d_model, nhead)
-        self.position_siren = Siren(in_channels=3, out_channels=d_model//2, scale=30)
-        self.time_embedding = SinusoidalPosEmb(d_model//2)
+        self.position_siren = Siren(in_channels=3, out_channels=d_model // 2, scale=30)
+        self.time_embedding = SinusoidalPosEmb(d_model // 2)
         self.encoder = nn.TransformerEncoder(enc_layer, layers)
         if self.out_type == "skewvec":
-            self.out_query = nn.Linear(d_model//2, d_model)
+            self.out_query = nn.Linear(d_model // 2, d_model)
             self.out_key = nn.Linear(d_model, d_model)
             self.out_value = nn.Linear(d_model, d_model)
-        self.out_net = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_out),
-            )
+
+        out_net = [ResLayer(nn.Sequential(nn.Linear(d_model, d_model),
+                                          nn.SiLU(),
+                                          )
+                            )
+                   for _ in range(4)]
+        out_net.append(nn.Linear(d_model, d_out))
+        self.out_net = nn.Sequential(*out_net)
 
     def forward(self, x, t):
         x_emb = self.position_siren(x)
         t_emb = self.time_embedding(t)
-        t_in = torch.cat((x_emb, t_emb[:,None,:].expand(x_emb.shape)), dim=2)
+        t_in = torch.cat((x_emb, t_emb[:, None, :].expand(x_emb.shape)), dim=2)
         # Transpose batch and sequence dimension
         # Because we're using a version of PT that doesn't support
         # Batch first.
         encoding = self.encoder(t_in.transpose(0, 1)).transpose(0, 1)
-
-
-
 
         if self.out_type == "skewvec":
             # Manual single-token attention for final prediction
@@ -113,10 +107,11 @@ class RotPredict(nn.Module):
         return out
 
 
-BATCH = 8
+BATCH = 4
 
 if __name__ == "__main__":
     import wandb
+
     wandb.init(project='ProjectedSO3Diffusion', entity='qazwsxal')
 
     torch.autograd.set_detect_anomaly(True)
@@ -125,11 +120,11 @@ if __name__ == "__main__":
     dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, pin_memory=True)
     net = RotPredict().to(device)
     net.train()
-    wandb.watch(net)
+    wandb.watch(net,log="all", log_freq=10)
     process = ProjectedSO3Diffusion(net).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=1e-5)
     i = 0
-    while i<40000:
+    while i < 40000:
         for data in dl:
             i += 1
             proj = PointCloudProj(data.to(device)).to(device)

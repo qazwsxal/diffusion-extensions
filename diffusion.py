@@ -255,7 +255,7 @@ class ProjectedSO3Diffusion(SO3Diffusion):
 
     def p_losses(self, x_start, t, noise=None):
         eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
-        noise = IsotropicGaussianSO3(eps).sample()
+        noise = IsotropicGaussianSO3(eps).sample().detach()
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         if self.loss_type == "backprop":
             x_noisy.requires_grad = True
