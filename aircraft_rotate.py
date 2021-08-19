@@ -59,7 +59,7 @@ class PointCloudProj(nn.Module):
 
 
 class RotPredict(nn.Module):
-    def __init__(self, d_model=512, nhead=4, layers=12, out_type="backprop"):
+    def __init__(self, d_model=512, nhead=8, layers=6, out_type="backprop"):
         super().__init__()
         self.out_type = out_type
         if out_type in ["skewvec", "backprop"]:
@@ -117,14 +117,14 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(True)
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,))
-    dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, pin_memory=True)
+    dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=4, pin_memory=True)
     net = RotPredict().to(device)
     net.train()
     wandb.watch(net,log="all", log_freq=10)
     process = ProjectedSO3Diffusion(net).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=1e-5)
     i = 0
-    while i < 40000:
+    while i < 4000:
         for data in dl:
             i += 1
             proj = PointCloudProj(data.to(device)).to(device)
@@ -137,6 +137,6 @@ if __name__ == "__main__":
             if i % 10:
                 pass
                 wandb.log({"loss": loss})
-            if i == 40000:
-                break
+                torch.save(net.state_dict(), "weights_aircraft.pt")
+
     torch.save(net.state_dict(), "weights_aircraft.pt")

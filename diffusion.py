@@ -228,13 +228,15 @@ class ProjectedSO3Diffusion(SO3Diffusion):
 
 
     def p_mean_variance(self, x, t, clip_denoised: bool):
-        x.requires_grad=True
-        proj_x = self.projection(x)
+        with torch.enable_grad():
+            x.requires_grad=True
+            proj_x = self.projection(x)
         df_out = self.denoise_fn(proj_x.detach(), t)
-
         r_grad = torch.autograd.grad(proj_x, x, df_out)[0]
         s_v = r_grad @ x.transpose(-1,-2)
-        predict = s_v - torch.diag(torch.diag(s_v))
+        # Extract skew-symmetric part i.e. project onto tangent
+        s_v_proj = (s_v - s_v.transpose(-1, -2)) / 2
+        predict = skew2vec(s_v_proj)
 
         x_recon = self.predict_start_from_noise(x, t=t, noise=predict)
 
