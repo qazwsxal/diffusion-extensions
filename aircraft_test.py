@@ -36,9 +36,9 @@ if __name__ == "__main__":
 
     # Decompose into euler-angle form for plotting.
     sy = torch.sqrt(res[..., 0, 0] * res[..., 0, 0] + res[..., 1, 0] * res[..., 1, 0])
-    x = torch.atan2(res[..., 2, 1], res[..., 2, 2])
-    y = torch.atan2(res[..., 2, 0], sy)
-    z = torch.atan2(res[..., 1, 0], res[..., 0, 0])
+    x = torch.atan2(res[..., 2, 1], res[..., 2, 2]).detach().cpu()
+    y = torch.atan2(res[..., 2, 0], sy).detach().cpu()
+    z = torch.atan2(res[..., 1, 0], res[..., 0, 0]).detach().cpu()
 
     # Seperate X, Y, Z axis plots
     fig, axlist = plt.subplots(nrows=3, ncols=1, sharex=True)
