@@ -5,7 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from diffusion import ProjectedSO3Diffusion
+from diffusion import ProjectedSO3Diffusion, extract
+from distributions import IsotropicGaussianSO3
 from models import SinusoidalPosEmb, Siren, ResLayer
 from rotations import six2rmat
 
@@ -59,7 +60,7 @@ class PointCloudProj(nn.Module):
 
 
 class RotPredict(nn.Module):
-    def __init__(self, d_model=512, nhead=8, layers=6, out_type="backprop"):
+    def __init__(self, d_model=512, nhead=8, layers=12, out_type="backprop"):
         super().__init__()
         self.out_type = out_type
         if out_type in ["skewvec", "backprop"]:
@@ -107,7 +108,7 @@ class RotPredict(nn.Module):
         return out
 
 
-BATCH = 4
+BATCH = 2
 
 if __name__ == "__main__":
     import wandb
@@ -120,13 +121,12 @@ if __name__ == "__main__":
     dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=4, pin_memory=True)
     net = RotPredict().to(device)
     net.train()
-    wandb.watch(net,log="all", log_freq=10)
+    wandb.watch(net, log="all", log_freq=10)
     process = ProjectedSO3Diffusion(net).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=1e-5)
     i = 0
-    while i < 4000:
+    while i < 40000:
         for data in dl:
-            i += 1
             proj = PointCloudProj(data.to(device)).to(device)
             truepos = process.identity
             loss = process(truepos.repeat(BATCH, 1, 1), proj)
@@ -134,9 +134,45 @@ if __name__ == "__main__":
             optim.zero_grad()
             loss.backward()
             optim.step()
-            if i % 10:
-                pass
-                wandb.log({"loss": loss})
+            logdict = {"loss": loss.detach()}
+            # Initial setup and prediction of some test data.
+            if i == 0:
+                with torch.no_grad():
+                    t = torch.randint(0, process.num_timesteps, (BATCH,), device=device).long()
+                    eps = extract(process.sqrt_one_minus_alphas_cumprod, t, t.shape)
+                    noise = IsotropicGaussianSO3(eps).sample().detach()
+                    x_noisy = process.q_sample(x_start=truepos.repeat(BATCH, 1, 1), t=t, noise=noise)
+                    proj_x_noisy = process.projection(x_noisy)
+
+            if i % 100 == 0:
                 torch.save(net.state_dict(), "weights_aircraft.pt")
+
+                with torch.no_grad():
+                    x_recon = process.denoise_fn(proj_x_noisy, t)
+                    start = proj_x_noisy[0].cpu().numpy()[::16]
+                    end = (proj_x_noisy[0] - x_recon[0]).cpu().numpy()[::16]
+                logdict["Predicted Gradients"] = wandb.Object3D(
+                    {
+                        "type": "lidar/beta",
+                        "points": proj_x_noisy[0].cpu().numpy(),
+                        "vectors": np.array([{"start": s.tolist(), "end": e.tolist()} for s, e in zip(start, end)]),
+                        "boxes": np.array([{
+                            "corners": [
+                                [-1, -1, -1],
+                                [-1,  1, -1],
+                                [-1, -1,  1],
+                                [ 1, -1, -1],
+                                [ 1,  1, -1],
+                                [-1,  1,  1],
+                                [ 1, -1,  1],
+                                [ 1,  1,  1]
+                                ],
+                            # "label": "Tree",
+                            "color": [123, 321, 111],
+                            }, ])
+                        }
+                    )
+            i += 1
+            wandb.log(logdict)
 
     torch.save(net.state_dict(), "weights_aircraft.pt")
