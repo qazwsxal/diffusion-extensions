@@ -265,17 +265,17 @@ class ProjectedSO3Diffusion(SO3Diffusion):
         proj_x_noisy = self.projection(x_noisy)
         x_recon = self.denoise_fn(proj_x_noisy, t)
 
-        if self.loss_type == "backprop":
-            r_grad = torch.autograd.grad(proj_x_noisy, x_noisy, x_recon, create_graph=True)[0]
-            s_v = r_grad @ x_noisy.transpose(-1,-2)
-            # Extract skew-symmetric part i.e. project onto tangent
-            s_v_proj = (s_v - s_v.transpose(-1,-2))/2
-            # Convert to vector form for regression
-            predict = skew2vec(s_v_proj)
-        else:
-            predict = x_recon
+        r_grad = torch.autograd.grad(proj_x_noisy, x_noisy, x_recon, create_graph=True)[0]
+        s_v = r_grad @ x_noisy.transpose(-1,-2)
+        # Extract skew-symmetric part i.e. project onto tangent
+        s_v_proj = (s_v - s_v.transpose(-1,-2))/2
+        sym_part = (s_v + s_v.transpose(-1,-2))/2
+        sym_loss = sym_part.mean()
+        # Convert to vector form for regression
+        predict = skew2vec(s_v_proj)
+
         descaled_noise = skew2vec(log_rmat(noise)) * (1 / eps)[...,None]
-        loss = F.mse_loss(predict, descaled_noise)
+        loss = F.mse_loss(predict, descaled_noise) + 0.01 * sym_loss
 
         if self.loss_type not in ["backprop", "skewvec"]:
             RuntimeError(f"Unexpected loss_type: {self.loss_type}")
