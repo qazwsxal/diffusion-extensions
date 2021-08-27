@@ -1,62 +1,14 @@
-import h5py
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
+from datasets import ShapeNet
 from diffusion import ProjectedSO3Diffusion, extract
 from distributions import IsotropicGaussianSO3
-from models import SinusoidalPosEmb, Siren, ResLayer
-from rotations import six2rmat
-
-
-class ShapeNet(Dataset):
-    def __init__(self, datatype, ids):
-        if isinstance(ids, int):
-            ids = (ids,)
-        if datatype == 'train':
-            filelist = 'data/shapenetcorev2_hdf5_2048/train_files.txt'
-        elif datatype == 'valid':
-            filelist = 'data/shapenetcorev2_hdf5_2048/val_files.txt'
-        elif datatype == 'test':
-            filelist = 'data/shapenetcorev2_hdf5_2048/test_files.txt'
-        else:
-            raise Exception(f'wrong dataset type specified: {datatype}')
-        with open(filelist) as f:
-            files = [x.strip('\n') for x in f.readlines()]
-        self.datalist = []
-        for file in files:
-            with h5py.File(file, 'r') as f:
-                self.datalist += [(file, i) for i, label in enumerate(f['label']) if label in ids]
-        self.h5dict = dict()
-
-    def __getitem__(self, item):
-        file, idx = self.datalist[item]
-        # Can't share file handles when forking to multiple processes,
-        # so initialise in the __getitem__ method.
-        # We also don't want to be re-opening them continuously,
-        # So stick them in a dict and re-use
-        try:
-            f = self.h5dict[file]
-        except KeyError:
-            f = h5py.File(file, 'r')
-            self.h5dict[file] = f
-        data = f['data'][idx]
-
-        return data
-
-    def __len__(self):
-        return len(self.datalist)
-
-
-class PointCloudProj(nn.Module):
-    def __init__(self, data):
-        super().__init__()
-        self.data = data
-
-    def forward(self, x):
-        return self.data @ x.transpose(-1, -2)
+from models import SinusoidalPosEmb, Siren, ResLayer, PointCloudProj
+from rotations import skew2vec, log_rmat
 
 
 class RotPredict(nn.Module):
@@ -118,61 +70,75 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(True)
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,))
-    dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=4, pin_memory=True)
+    dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
     net = RotPredict().to(device)
     net.train()
     wandb.watch(net, log="all", log_freq=10)
     process = ProjectedSO3Diffusion(net).to(device)
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=1e-5)
     i = 0
-    while i < 40000:
-        for data in dl:
-            proj = PointCloudProj(data.to(device)).to(device)
-            truepos = process.identity
-            loss = process(truepos.repeat(BATCH, 1, 1), proj)
-            print(loss.item())
-            optim.zero_grad()
-            loss.backward()
-            optim.step()
-            logdict = {"loss": loss.detach()}
-            # Initial setup and prediction of some test data.
-            if i == 0:
-                with torch.no_grad():
-                    t = torch.randint(0, process.num_timesteps, (BATCH,), device=device).long()
-                    eps = extract(process.sqrt_one_minus_alphas_cumprod, t, t.shape)
-                    noise = IsotropicGaussianSO3(eps).sample().detach()
-                    x_noisy = process.q_sample(x_start=truepos.repeat(BATCH, 1, 1), t=t, noise=noise)
-                    proj_x_noisy = process.projection(x_noisy)
+    data = next(iter(dl)).repeat(BATCH, 1, 1)
+    proj = PointCloudProj(data.to(device)).to(device)
+    while i < 400000:
+        truepos = process.identity
+        loss = process(truepos.repeat(BATCH, 1, 1), proj)
+        print(loss.item())
+        optim.zero_grad()
+        loss.backward()
+        optim.step()
+        logdict = {"loss": loss.detach()}
+        # Initial setup and prediction of some test data.
+        if i == 0:
+            t = torch.randint(0, process.num_timesteps, (BATCH,), device=device).long()
+            eps = extract(process.sqrt_one_minus_alphas_cumprod, t, t.shape)
+            noise = IsotropicGaussianSO3(eps).sample().detach()
+            x_noisy = process.q_sample(x_start=truepos.repeat(BATCH, 1, 1), t=t, noise=noise)
+            x_noisy.requires_grad = True
+            proj_x_noisy = process.projection(x_noisy)
+            descaled_noise = skew2vec(log_rmat(noise)) * (1 / eps)[..., None]
 
-            if i % 100 == 0:
-                torch.save(net.state_dict(), "weights_aircraft.pt")
+        if i % 100 == 0:
+            torch.save(net.state_dict(), "weights_aircraft.pt")
+            with torch.no_grad():
+                x_recon = process.denoise_fn(proj_x_noisy, t)
+            orth_loss = (proj_x_noisy * x_recon).sum(dim=-1).pow(2).mean()
+            r_grad = torch.autograd.grad(proj_x_noisy, x_noisy, x_recon, retain_graph=True, create_graph=False)[0]
+            s_v = r_grad @ x_noisy.transpose(-1, -2)
+            # Extract skew-symmetric part i.e. project onto tangent
+            s_v_proj = (s_v - s_v.transpose(-1, -2)) / 2
+            sym_part = (s_v + s_v.transpose(-1, -2)) / 2
+            sym_loss = sym_part.pow(2).mean()
+            # Convert to vector form for regression
+            predict = skew2vec(s_v_proj)
+            test_loss = F.mse_loss(predict, descaled_noise) + sym_loss + orth_loss
+            logdict["test loss"] = test_loss.detach()
 
-                with torch.no_grad():
-                    x_recon = process.denoise_fn(proj_x_noisy, t)
-                    start = proj_x_noisy[0].cpu().numpy()[::16]
-                    end = (proj_x_noisy[0] - x_recon[0]).cpu().numpy()[::16]
-                logdict["Predicted Gradients"] = wandb.Object3D(
-                    {
-                        "type": "lidar/beta",
-                        "points": proj_x_noisy[0].cpu().numpy(),
-                        "vectors": np.array([{"start": s.tolist(), "end": e.tolist()} for s, e in zip(start, end)]),
-                        "boxes": np.array([{
-                            "corners": [
-                                [-1, -1, -1],
-                                [-1,  1, -1],
-                                [-1, -1,  1],
-                                [ 1, -1, -1],
-                                [ 1,  1, -1],
-                                [-1,  1,  1],
-                                [ 1, -1,  1],
-                                [ 1,  1,  1]
-                                ],
-                            # "label": "Tree",
-                            "color": [123, 321, 111],
-                            }, ])
-                        }
-                    )
-            i += 1
-            wandb.log(logdict)
+            start = proj_x_noisy[0].detach().cpu().numpy()[::16] / 2
+            end = (proj_x_noisy[0] - x_recon[0]).detach().cpu().numpy()[::16] / 2
+
+            logdict["Predicted Gradients"] = wandb.Object3D(
+                {"type": "lidar/beta",
+                 "points": proj_x_noisy[0].detach().cpu().numpy() / 2,
+                 "vectors": np.array([{"start": s.tolist(), "end": e.tolist()}
+                                      for s, e in zip(start, end)
+                                      ]),
+                 "boxes": np.array([{
+                     "corners": [
+                         [-0.5, -0.5, -0.5],
+                         [-0.5, 0.5, -0.5],
+                         [-0.5, -0.5, 0.5],
+                         [0.5, -0.5, -0.5],
+                         [0.5, 0.5, -0.5],
+                         [-0.5, 0.5, 0.5],
+                         [0.5, -0.5, 0.5],
+                         [0.5, 0.5, 0.5]
+                         ],
+                     # "label": "Tree",
+                     "color": [123, 321, 111],
+                     }, ])
+                 }
+                )
+        i += 1
+        wandb.log(logdict)
 
     torch.save(net.state_dict(), "weights_aircraft.pt")

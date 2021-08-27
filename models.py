@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch import nn as nn
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -63,3 +64,12 @@ class Siren(nn.Module):
             return self.post_scale(res)
         else:
             return res
+
+
+class PointCloudProj(nn.Module):
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+
+    def forward(self, x):
+        return self.data @ x.transpose(-1, -2)
