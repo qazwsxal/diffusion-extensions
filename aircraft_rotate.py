@@ -12,7 +12,7 @@ from rotations import skew2vec, log_rmat
 
 
 class RotPredict(nn.Module):
-    def __init__(self, d_model=512, nhead=8, layers=12, out_type="backprop"):
+    def __init__(self, d_model=512, nhead=8, layers=12, out_type="skewvec"):
         super().__init__()
         self.out_type = out_type
         if out_type in ["skewvec", "backprop"]:
@@ -24,10 +24,6 @@ class RotPredict(nn.Module):
         self.position_siren = Siren(in_channels=3, out_channels=d_model // 2, scale=30)
         self.time_embedding = SinusoidalPosEmb(d_model // 2)
         self.encoder = nn.TransformerEncoder(enc_layer, layers)
-        if self.out_type == "skewvec":
-            self.out_query = nn.Linear(d_model // 2, d_model)
-            self.out_key = nn.Linear(d_model, d_model)
-            self.out_value = nn.Linear(d_model, d_model)
 
         out_net = [ResLayer(nn.Sequential(nn.Linear(d_model, d_model),
                                           nn.SiLU(),
@@ -47,12 +43,7 @@ class RotPredict(nn.Module):
         encoding = self.encoder(t_in.transpose(0, 1)).transpose(0, 1)
 
         if self.out_type == "skewvec":
-            # Manual single-token attention for final prediction
-            Q = self.out_query(torch.ones_like(t_emb[:, None, :]))
-            K = self.out_key(encoding)
-            V = self.out_value(encoding)
-            t_out = torch.softmax(Q @ K.transpose(-1, -2) * self.recip_sqrt_dim, dim=-1) @ V
-            t_out = t_out[..., 0, :]  # Drop sequence/token dimension
+            t_out = encoding.mean(dim=1)
         elif self.out_type == "backprop":
             t_out = encoding
 
@@ -101,43 +92,11 @@ if __name__ == "__main__":
             torch.save(net.state_dict(), "weights_aircraft.pt")
             with torch.no_grad():
                 x_recon = process.denoise_fn(proj_x_noisy, t)
-            orth_loss = (proj_x_noisy * x_recon).sum(dim=-1).pow(2).mean()
-            r_grad = torch.autograd.grad(proj_x_noisy, x_noisy, x_recon, retain_graph=True, create_graph=False)[0]
-            s_v = r_grad @ x_noisy.transpose(-1, -2)
-            # Extract skew-symmetric part i.e. project onto tangent
-            s_v_proj = (s_v - s_v.transpose(-1, -2)) / 2
-            sym_part = (s_v + s_v.transpose(-1, -2)) / 2
-            sym_loss = sym_part.pow(2).mean()
-            # Convert to vector form for regression
-            predict = skew2vec(s_v_proj)
-            test_loss = F.mse_loss(predict, descaled_noise) + sym_loss + orth_loss
+            test_loss = F.mse_loss(x_recon, descaled_noise)
             logdict["test loss"] = test_loss.detach()
 
             start = proj_x_noisy[0].detach().cpu().numpy()[::16] / 2
             end = (proj_x_noisy[0] - x_recon[0]).detach().cpu().numpy()[::16] / 2
-
-            logdict["Predicted Gradients"] = wandb.Object3D(
-                {"type": "lidar/beta",
-                 "points": proj_x_noisy[0].detach().cpu().numpy() / 2,
-                 "vectors": np.array([{"start": s.tolist(), "end": e.tolist()}
-                                      for s, e in zip(start, end)
-                                      ]),
-                 "boxes": np.array([{
-                     "corners": [
-                         [-0.5, -0.5, -0.5],
-                         [-0.5, 0.5, -0.5],
-                         [-0.5, -0.5, 0.5],
-                         [0.5, -0.5, -0.5],
-                         [0.5, 0.5, -0.5],
-                         [-0.5, 0.5, 0.5],
-                         [0.5, -0.5, 0.5],
-                         [0.5, 0.5, 0.5]
-                         ],
-                     # "label": "Tree",
-                     "color": [123, 321, 111],
-                     }, ])
-                 }
-                )
         i += 1
         wandb.log(logdict)
 

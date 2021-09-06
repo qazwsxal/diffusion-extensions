@@ -228,16 +228,8 @@ class ProjectedSO3Diffusion(SO3Diffusion):
 
 
     def p_mean_variance(self, x, t, clip_denoised: bool):
-        with torch.enable_grad():
-            x.requires_grad=True
-            proj_x = self.projection(x)
-        df_out = self.denoise_fn(proj_x.detach(), t)
-        r_grad = torch.autograd.grad(proj_x, x, df_out)[0]
-        s_v = r_grad @ x.transpose(-1,-2)
-        # Extract skew-symmetric part i.e. project onto tangent
-        s_v_proj = (s_v - s_v.transpose(-1, -2)) / 2
-        predict = skew2vec(s_v_proj)
-
+        proj_x = self.projection(x)
+        predict = self.denoise_fn(proj_x, t)
         x_recon = self.predict_start_from_noise(x, t=t, noise=predict)
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
@@ -259,23 +251,13 @@ class ProjectedSO3Diffusion(SO3Diffusion):
         eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
         noise = IsotropicGaussianSO3(eps).sample().detach()
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        if self.loss_type == "backprop":
-            x_noisy.requires_grad = True
+
 
         proj_x_noisy = self.projection(x_noisy)
         x_recon = self.denoise_fn(proj_x_noisy, t)
 
-        r_grad = torch.autograd.grad(proj_x_noisy, x_noisy, x_recon, create_graph=True)[0]
-        s_v = r_grad @ x_noisy.transpose(-1,-2)
-        # Extract skew-symmetric part i.e. project onto tangent
-        s_v_proj = (s_v - s_v.transpose(-1,-2))/2
-        sym_part = (s_v + s_v.transpose(-1,-2))/2
-        sym_loss = sym_part.mean()
-        # Convert to vector form for regression
-        predict = skew2vec(s_v_proj)
-
         descaled_noise = skew2vec(log_rmat(noise)) * (1 / eps)[...,None]
-        loss = F.mse_loss(predict, descaled_noise) + 0.01 * sym_loss
+        loss = F.mse_loss(x_recon, descaled_noise)
 
         if self.loss_type not in ["backprop", "skewvec"]:
             RuntimeError(f"Unexpected loss_type: {self.loss_type}")
