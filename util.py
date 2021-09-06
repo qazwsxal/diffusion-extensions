@@ -20,4 +20,5 @@ def init_from_dict(argdict, *classes):
         args = [k for k, v in sig.parameters.items() if
                 v.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD]
         class_kwargs = {k:v for k,v in argdict.items() if k in args}
-        objs += cls(**class_kwargs)
+        objs.append(cls(**class_kwargs))
+    return objs

@@ -1,0 +1,19 @@
+program: aircraft_rotate.py
+project: ProjectedSO3Diffusion
+method: grid
+metric:
+  name: "test loss"
+  goal: minimize
+parameters:
+  batch:
+    value: 2
+  lr:
+    values: [1e-5,3e-5,1e-4,3e-4,1e-3,3e-3]
+  d_model:
+    value: 512
+  heads:
+    values: [4, 8]
+  layers:
+    values: [6,8,10]
+  out_type:
+    values: ["mean", "token"]

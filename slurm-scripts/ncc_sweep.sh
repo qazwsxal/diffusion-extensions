@@ -5,9 +5,9 @@
 
 
 #SBATCH -p "res-gpu-small"
-#SBATCH --exclude="gpu[0-6]"
+#SBATCH --exclude="gpu[7-8]"
 #SBATCH --qos="short"
-#SBATCH -t 2-00
+#SBATCH -t 0-01:00:00
 
 # Source the bash profile (required to use the module command)
 source /etc/profile
@@ -18,4 +18,4 @@ source .venv/bin/activate
 export HDF5_USE_FILE_LOCKING=FALSE
 # export PYTORCH_JIT=0
 # export CUDA_LAUNCH_BLOCKING=1
-python3 -u aircraft_rotate.py
+wandb agent --count 1 "$@"
