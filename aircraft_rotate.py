@@ -89,7 +89,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--out_type",
         type=str,
-        default="mean",
+        default="token",
         help= "how to construct output values"
         )
 
@@ -99,44 +99,50 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,))
-    dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
+    dl = DataLoader(ds, batch_size=config['batch'], shuffle=True, num_workers=4, pin_memory=True)
+
+
     net, = init_from_dict(config, RotPredict)
     net.to(device)
     net.train()
     wandb.watch(net, log="all", log_freq=10)
     process = ProjectedSO3Diffusion(net).to(device)
+    truepos = process.identity
     optim = torch.optim.Adam(process.denoise_fn.parameters(), lr=config['lr'])
+
+    # Set up data/information for valdiation
+    with torch.no_grad():
+        v_ds = ShapeNet('valid', (0,))
+        v_dl = DataLoader(v_ds, batch_size=config['batch'], shuffle=False, num_workers=4, pin_memory=True)
+        t_v = torch.randint(0, process.num_timesteps, (config['batch'],), device=device).long()
+        eps_v = extract(process.sqrt_one_minus_alphas_cumprod, t_v, t_v.shape)
+        noise_v = IsotropicGaussianSO3(eps_v).sample().detach()
+        data_v = next(iter(v_dl)).to(device)
+        proj_v = PointCloudProj(data_v).to(device)
+        x_noisy_v = process.q_sample(x_start=truepos.repeat(config['batch'], 1, 1), t=t_v, noise=noise_v)
+        proj_x_noisy_v = proj_v(x_noisy_v)
+        descaled_noise_v = skew2vec(log_rmat(noise_v)) * (1 / eps_v)[..., None]
+
     i = 0
-    data = next(iter(dl)).repeat(config['batch'], 1, 1)
-    proj = PointCloudProj(data.to(device)).to(device)
-    while i < 10000:
-        truepos = process.identity
-        loss = process(truepos.repeat(config['batch'], 1, 1), proj)
-        print(loss.item())
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
-        logdict = {"loss": loss.detach()}
-        # Initial setup and prediction of some test data.
-        if i == 0:
-            t = torch.randint(0, process.num_timesteps, (config['batch'],), device=device).long()
-            eps = extract(process.sqrt_one_minus_alphas_cumprod, t, t.shape)
-            noise = IsotropicGaussianSO3(eps).sample().detach()
-            x_noisy = process.q_sample(x_start=truepos.repeat(config['batch'], 1, 1), t=t, noise=noise)
-            x_noisy.requires_grad = True
-            proj_x_noisy = process.projection(x_noisy)
-            descaled_noise = skew2vec(log_rmat(noise)) * (1 / eps)[..., None]
+    while i < 1000000:
+        for data in dl:
+            proj = PointCloudProj(data.to(device)).to(device)
+            loss = process(truepos.repeat(config['batch'], 1, 1), proj)
+            print(loss.item())
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            logdict = {"loss": loss.detach()}
 
-        if i % 100 == 0:
-            torch.save(net.state_dict(), "weights_aircraft.pt")
-            with torch.no_grad():
-                x_recon = process.denoise_fn(proj_x_noisy, t)
-            test_loss = F.mse_loss(x_recon, descaled_noise)
-            logdict["test loss"] = test_loss.detach()
+            # Validation
+            if i % 100 == 0:
+                torch.save(net.state_dict(), "weights_aircraft.pt")
+                with torch.no_grad():
+                    x_recon = process.denoise_fn(proj_x_noisy_v, t_v)
+                test_loss = F.mse_loss(x_recon, descaled_noise_v)
+                logdict["test loss"] = test_loss.detach()
 
-            start = proj_x_noisy[0].detach().cpu().numpy()[::16] / 2
-            end = (proj_x_noisy[0] - x_recon[0]).detach().cpu().numpy()[::16] / 2
-        i += 1
-        wandb.log(logdict)
+            i += 1
+            wandb.log(logdict)
 
     torch.save(net.state_dict(), "weights_aircraft.pt")

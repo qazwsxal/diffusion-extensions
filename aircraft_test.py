@@ -1,77 +1,88 @@
+import torch
+
 from aircraft_rotate import *
 from datasets import ShapeNet
 from models import PointCloudProj
 from mpl_utils import *
-from tqdm import tqdm
-
+from tqdm import tqdm, trange
+from rotations import *
 from diffusion import ProjectedSO3Diffusion
 
-BATCH = 16
+SAMPLES = 3
 
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PyTorch Soft Actor-Critic Args")
+    parser.add_argument(
+        "--batch", type=int, default=8, help="batch size (default: 8)"
+        )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=3e-4,
+        help="learning rate",
+        )
+    parser.add_argument(
+        "--d_model",
+        type=int,
+        default=512,
+        help="transformer dimensionality",
+        )
+    parser.add_argument(
+        "--heads",
+        type=int,
+        default=4,
+        help="number of self-attention heads per layer",
+        )
+    parser.add_argument(
+        "--layers",
+        type=int,
+        default=4,
+        help="number of transformer layers",
+        )
+    parser.add_argument(
+        "--out_type",
+        type=str,
+        default="token",
+        help="how to construct output values"
+        )
+
+    args = parser.parse_args()
+
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
-    net = RotPredict().to(device)
+    ds = ShapeNet('train', (0,))
+    dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=4, pin_memory=True)
+
+    net, = init_from_dict(vars(args), RotPredict)
+    net.to(device)
     net.load_state_dict(torch.load("weights_aircraft.pt", map_location=device))
     net.eval()
     process = ProjectedSO3Diffusion(net).to(device)
 
-    ds = ShapeNet('train', (0,))
-    dl = DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=0, pin_memory=True)
-    iter_dl = iter(dl)
-    data = next(iter_dl)
-    proj = PointCloudProj(data.to(device)).to(device)
-    process.projection = proj
-    # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
-    R, _ = torch.qr(torch.randn((BATCH, 3, 3)))
-    R = R.to(device)
-    res = torch.zeros((process.num_timesteps, BATCH, 3, 3), device=device)
-    for i in tqdm(reversed(range(0, process.num_timesteps)),
-                  desc='sampling loop time step',
-                  total=process.num_timesteps,
-                  ):
-        res[i] = R.detach()
-        R = process.p_sample(R, torch.full((BATCH,), i, device=device, dtype=torch.long)).detach()
+    ds = ShapeNet('test', (0,))
+    dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True)
+    res = torch.zeros((len(ds), SAMPLES))
+    for b, data in enumerate(tqdm(dl, desc = 'batch')):
+        proj = PointCloudProj(data.to(device)).to(device)
+        process.projection = proj
+        results = torch.zeros((args.batch, SAMPLES, 3,3)).to(device)
+        for samp in range(SAMPLES):
+            with torch.no_grad():
+                # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
+                R, _ = torch.qr(torch.randn((args.batch, 3, 3)))
+                R = R.to(device)
+                res = torch.zeros((process.num_timesteps, args.batch, 3, 3), device=device)
+                for i in tqdm(reversed(range(0, process.num_timesteps)),
+                              desc='sampling loop time step',
+                              total=process.num_timesteps,
+                              ):
+                    R = process.p_sample(R, torch.full((args.batch,), i, device=device, dtype=torch.long)).detach()
+            results[:,samp] = R
 
-    # Decompose into euler-angle form for plotting.
-    sy = torch.sqrt(res[..., 0, 0] * res[..., 0, 0] + res[..., 1, 0] * res[..., 1, 0])
-    x = torch.atan2(res[..., 2, 1], res[..., 2, 2]).detach().cpu()
-    y = torch.atan2(res[..., 2, 0], sy).detach().cpu()
-    z = torch.atan2(res[..., 1, 0], res[..., 0, 0]).detach().cpu()
+        axis, angle = rmat_to_aa(results)
+        start = b * args.batch
+        end = start + len(angle)
+        res[start:end] = angle.detach().cpu()
+    torch.save(res, "angles.pt")
 
-    # Seperate X, Y, Z axis plots
-    fig, axlist = plt.subplots(nrows=3, ncols=1, sharex=True)
-    axlist[0].plot(torch.arange(1000).flip(0), x, alpha=0.2, c="#1f77b4")
-    axlist[1].plot(torch.arange(1000).flip(0), y, alpha=0.2, c="#ff7f0e")
-    axlist[2].plot(torch.arange(1000).flip(0), z, alpha=0.2, c="#2ca02c")
-
-    # Add "target" lines to show convergence
-    axlist[0].axhline(0, color='grey', linestyle="-", lw=0.5)
-    axlist[1].axhline(0, color='grey', linestyle="-", lw=0.5)
-    axlist[2].axhline(np.pi / 2, color='grey', linestyle="-", lw=0.5)
-    axlist[2].axhline(-np.pi / 2, color='grey', linestyle="-", lw=0.5)
-
-    # Axis labels
-    axlist[2].set_xlabel("Reverse process steps")
-    axlist[1].set_ylabel("Angle")
-
-    # Legend for all three axes
-    custom_lines = [Line2D([0], [0], color="#1f77b4", lw=2),
-                    Line2D([0], [0], color="#ff7f0e", lw=2),
-                    Line2D([0], [0], color="#2ca02c", lw=2)]
-    axlist[0].legend(custom_lines, ['X', 'Y', 'Z'], bbox_to_anchor=(1.05, 1), loc='upper left')
-
-    for ax in axlist:
-        # ax.set_ylim((-np.pi,np.pi))
-        ax.yaxis.set_major_locator(plt.MultipleLocator(np.pi / 2))
-        ax.yaxis.set_minor_locator(plt.MultipleLocator(np.pi / 4))
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(multiple_formatter(denominator=2)))
-        ax.tick_params(direction="in")
-
-    # Set equal spacing on left and right margins so axes appear in the center,
-    # labels/legends appear tacked on either side, but when centered in latex, it looks better
-    fig.subplots_adjust(left=0.1, right=0.9, top=1.0, hspace=0.1)
-
-    plt.savefig("projected_rotations.pdf")
-    print('aaaa')
