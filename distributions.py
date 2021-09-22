@@ -62,7 +62,7 @@ class IsotropicGaussianSO3(Distribution):
     def _eps_ft(self, t: torch.Tensor) -> torch.Tensor:
         maxdims = max(len(self.eps.shape), len(t.shape))
         # This is an infinite sum, approximate with 5/eps**2 values
-        l_count = round(min((5 / self.eps.min() ** 2).item(), 1e6))
+        l_count = round(min((5 / self.eps.min() ** 2).item(), 1e5))
         if l_count >= 1e6:
             print("Very small eps!", self.eps.min())
         l = torch.arange(l_count).reshape((*([1] * maxdims),-1)).to(self.eps)
