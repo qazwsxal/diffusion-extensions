@@ -5,9 +5,9 @@
 
 
 #SBATCH -p "res-gpu-small"
-#SBATCH --exclude="gpu[7-8]"
+#SBATCH --exclude="gpu[0-6]"
 #SBATCH --qos="short"
-#SBATCH -t 0-01:00:00
+#SBATCH -t 0-12:00:00
 
 # Source the bash profile (required to use the module command)
 source /etc/profile

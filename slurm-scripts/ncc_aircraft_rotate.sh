@@ -6,8 +6,8 @@
 
 #SBATCH -p "res-gpu-small"
 #SBATCH --exclude="gpu[0-6]"
-#SBATCH --qos="short"
-#SBATCH -t 2-00
+#SBATCH --qos="long-high-prio"
+#SBATCH -t 7-00
 
 # Source the bash profile (required to use the module command)
 source /etc/profile
