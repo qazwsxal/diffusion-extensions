@@ -40,6 +40,8 @@ class RotPredict(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         x_flat = torch.flatten(x, start_dim=-2)
         t_emb = self.time_embedding(t)
+        if t_emb.shape[0] == 1:
+            t_emb = t_emb.expand(x_flat.shape[0], -1)
         xt = torch.cat((x_flat,t_emb), dim=-1)
 
         out = self.net(xt)
@@ -73,8 +75,8 @@ if __name__ == "__main__":
             optim.zero_grad()
             loss.backward()
             optim.step()
-            if i % 10:
+            if i % 10 == 0:
                 wandb.log({"loss": loss})
                 print(loss.item())
-            if i % 1000:
+            if i % 1000 == 0:
                 torch.save(net.state_dict(), "weights_so3.pt")

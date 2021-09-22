@@ -3,10 +3,11 @@ import torch
 from so3_train import RotPredict
 from mpl_utils import *
 from tqdm import tqdm
+from rotations import *
 
 from diffusion import SO3Diffusion
 
-BATCH = 64
+BATCH = 512
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
@@ -18,22 +19,19 @@ if __name__ == "__main__":
     net.load_state_dict(torch.load("weights_so3.pt", map_location=device))
     net.eval()
     process = SO3Diffusion(net, loss_type="skewvec").to(device)
-    batch = 64
-    # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
-    R, _ = torch.qr(torch.randn((batch, 3, 3)))
-    res = torch.zeros((process.num_timesteps, batch, 3, 3))
-    for i in tqdm(reversed(range(0, process.num_timesteps)),
-                  desc='sampling loop time step',
-                  total=process.num_timesteps,
-                  ):
-        res[i] = R
-        R = process.p_sample(R, torch.full((batch,), i, device=device, dtype=torch.long))
+    with torch.no_grad():
+        # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
+        R, _ = torch.qr(torch.randn((BATCH, 3, 3)))
+        res = torch.zeros((process.num_timesteps, BATCH, 3, 3))
+        for i in tqdm(reversed(range(0, process.num_timesteps)),
+                      desc='sampling loop time step',
+                      total=process.num_timesteps,
+                      ):
+            res[i] = R.detach()
+            R = process.p_sample(R, torch.full((1,), i, device=device, dtype=torch.long))
 
     # Decompose into euler-angle form for plotting.
-    sy = torch.sqrt(res[..., 0, 0] * res[..., 0, 0] + res[..., 1, 0] * res[..., 1, 0])
-    x = torch.atan2(res[..., 2, 1], res[..., 2, 2])
-    y = torch.atan2(res[..., 2, 0], sy)
-    z = torch.atan2(res[..., 1, 0], res[..., 0, 0])
+    x,y,z = rmat_to_euler(res)
 
     # Seperate X, Y, Z axis plots
     fig, axlist = plt.subplots(nrows=3, ncols=1, sharex=True)
@@ -70,4 +68,14 @@ if __name__ == "__main__":
 
     plt.show()
     plt.savefig("rotations.eps")
-    print('aaaa')
+    out = res[0]
+    z90 = torch.tensor([[0.0,-1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0]])
+    z90pangle = rmat_dist(res, z90[None,None]) * 0.70710678118
+    z90mangle = rmat_dist(res, z90.T[None, None]) * 0.70710678118
+    z90close = (z90pangle[0] < z90mangle[0])
+    z90stack = torch.stack((z90mangle, z90pangle),dim=0)
+    z90best = torch.gather(z90stack, 0, z90close.expand(1, *z90stack.shape[1:]).to(int))[0]
+    plt.plot(torch.arange(1000).flip(0), z90best, alpha=0.2, c="#1f77b4")
+    print('aaaaa')

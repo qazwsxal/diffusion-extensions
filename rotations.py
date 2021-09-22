@@ -3,10 +3,12 @@ from operator import matmul
 from typing import Tuple
 import torch
 
+
 @torch.jit.script
 def rmat2six(x: torch.Tensor) -> torch.Tensor:
     # Drop last column
     return torch.flatten(x[..., :2, :], -2, -1)
+
 
 @torch.jit.script
 def six2rmat(x: torch.Tensor) -> torch.Tensor:
@@ -20,17 +22,19 @@ def six2rmat(x: torch.Tensor) -> torch.Tensor:
     out = torch.stack((b1, b2, b3), dim=-2)
     return out
 
+
 @torch.jit.script
 def skew2vec(skew: torch.Tensor) -> torch.Tensor:
-    vec = torch.zeros_like(skew[...,0])
+    vec = torch.zeros_like(skew[..., 0])
     vec[..., 0] = skew[..., 2, 1]
     vec[..., 1] = -skew[..., 2, 0]
     vec[..., 2] = skew[..., 1, 0]
     return vec
 
+
 @torch.jit.script
 def vec2skew(vec: torch.Tensor) -> torch.Tensor:
-    skew = torch.repeat_interleave(torch.zeros_like(vec).unsqueeze(-1), 3,dim=-1)
+    skew = torch.repeat_interleave(torch.zeros_like(vec).unsqueeze(-1), 3, dim=-1)
     skew[..., 2, 1] = vec[..., 0]
     skew[..., 2, 0] = -vec[..., 1]
     skew[..., 1, 0] = vec[..., 2]
@@ -49,7 +53,7 @@ def orthogonalise(mat):
     """
     orth_mat = mat.clone()
     u, s, v = torch.svd(mat[..., :3, :3])
-    orth_mat[..., :3, :3] = u @ torch.diag_embed(s.round()) @ v.transpose(-1,-2)
+    orth_mat[..., :3, :3] = u @ torch.diag_embed(s.round()) @ v.transpose(-1, -2)
     return orth_mat
 
 
@@ -81,17 +85,18 @@ def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
 def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
     skew_mat = (r_mat - r_mat.transpose(-1, -2))
     sk_vec = skew2vec(skew_mat)
-    s_angle = (sk_vec).norm(p=2, dim=-1)/2
+    s_angle = (sk_vec).norm(p=2, dim=-1) / 2
     c_angle = (torch.einsum('...ii', r_mat) - 1) / 2
     angle = torch.atan2(s_angle, c_angle)
     scale = (angle / (2 * s_angle))
-    scale[angle==0.0] = 0.0
+    scale[angle == 0.0] = 0.0
     # if s_angle = 0, i.e. rotation by 0 or pi, we get NaNs
     # by definition, scale values are 0 if rotating by 0.
     # This also breaks down if rotating by pi, but idk how to fix that.
     log_r_mat = scale[..., None, None] * skew_mat
 
     return log_r_mat
+
 
 @torch.jit.script
 def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
@@ -100,9 +105,9 @@ def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
         `rot_axis`: Axis to rotate around, defined as vector from origin.
         `ang`: rotation angle
         '''
-    rot_axis_n = rot_axis/rot_axis.norm(p=2, dim=-1, keepdim=True)
+    rot_axis_n = rot_axis / rot_axis.norm(p=2, dim=-1, keepdim=True)
     sk_mats = vec2skew(rot_axis_n)
-    log_rmats = sk_mats * ang[...,None]
+    log_rmats = sk_mats * ang[..., None]
     rot_mat = torch.matrix_exp(log_rmats)
     return orthogonalise(rot_mat)
 
@@ -123,22 +128,23 @@ def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
     log_mat = log_rmat(r_mat)
     skew_vec = skew2vec(log_mat)
     angle = skew_vec.norm(p=2, dim=-1, keepdim=True)
-    axis = skew_vec/angle
+    axis = skew_vec / angle
     return axis, angle
 
 
 @torch.jit.script
-def rmat_dist(input: torch.Tensor, target: torch.Tensor)-> torch.Tensor:
+def rmat_dist(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     '''Calculates the geodesic distance between two (batched) rotation matrices.
 
     '''
-    mul = input.transpose(-1,-2) @ target
+    mul = input.transpose(-1, -2) @ target
     log_mul = log_rmat(mul)
     out = log_mul.norm(p=2, dim=(-1, -2))
     return out  # Frobenius norm
 
+
 @torch.jit.script
-def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
+def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     ''' Weighted interpolation between rot_a and rot_b
 
     '''
@@ -153,6 +159,7 @@ def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor):
     rot_c_i = aa_to_rmat(axis, i_angle)
     return rot_a @ rot_c_i
 
+
 @torch.jit.script
 def so3_scale(rmat, scalars):
     '''Scale the magnitude of a rotation matrix,
@@ -163,14 +170,56 @@ def so3_scale(rmat, scalars):
     So instead, we take advantage of the properties of rotation matrices
     to calculate logarithms easily. and multiply instead.
     '''
-    logs =  log_rmat(rmat)
-    scaled_logs = logs * scalars[...,None, None]
+    logs = log_rmat(rmat)
+    scaled_logs = logs * scalars[..., None, None]
     out = torch.matrix_exp(scaled_logs)
     return out
 
 
+@torch.jit.script
+def rmat_to_euler(rmat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    sy = torch.sqrt(rmat[..., 0, 0] * rmat[..., 0, 0] + rmat[..., 1, 0] * rmat[..., 1, 0])
+    x = torch.atan2(rmat[..., 2, 1], rmat[..., 2, 2])
+    y = torch.atan2(rmat[..., 2, 0], sy)
+    z = torch.atan2(rmat[..., 1, 0], rmat[..., 0, 0])
+    return x, y, z
+
+
+def euler_to_rmat(x, y, z):
+    R_x = torch.eye(3).repeat(*x.shape, 1, 1).to(x)
+    cos_x = torch.cos(x)
+    sin_x = torch.sin(x)
+    R_x[..., 1, 1] = cos_x
+    R_x[..., 1, 2] = -sin_x
+    R_x[..., 2, 1] = sin_x
+    R_x[..., 2, 2] = cos_x
+
+    R_y = torch.eye(3).repeat(*y.shape, 1, 1).to(y)
+    cos_y = torch.cos(y)
+    sin_y = torch.sin(y)
+    R_y[..., 0, 0] = cos_y
+    R_y[..., 2, 0] = sin_y
+    R_y[..., 0, 2] = -sin_y
+    R_y[..., 2, 2] = cos_y
+
+    R_z = torch.eye(3).repeat(*z.shape, 1, 1).to(z)
+    cos_z = torch.cos(z)
+    sin_z = torch.sin(z)
+    R_z[..., 0, 0] = cos_z
+    R_z[..., 0, 1] = -sin_z
+    R_z[..., 1, 0] = sin_z
+    R_z[..., 1, 1] = cos_z
+
+    R = R_z @ R_y @ R_x
+
+    return R
+
 
 if __name__ == "__main__":
+    x, y, z = torch.tensor(0.14159), torch.tensor(-1.0), torch.tensor(2.4)
+    R = euler_to_rmat(x, y, z)
+    print(x, y, z)
+    print(*rmat_to_euler(R))
     vals = torch.randn((3, 4, 6))
     mats = six2rmat(vals)
     valback = rmat2six(mats)
@@ -181,9 +230,8 @@ if __name__ == "__main__":
     res3 = rmat_cosine_dist(m2, m2)
     weight = 0.2
     out = so3_lerp(m1[0, 0], m2[0, 0], weight)
-    log_m1 = log_rmat(m1[0,0])
+    log_m1 = log_rmat(m1[0, 0])
     log_rmat(torch.eye(3))
-
 
     rotvec = torch.tensor([[3.141592654, 0, 0]])
     log_mat = vec2skew(rotvec)
