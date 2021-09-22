@@ -8,3 +8,5 @@ images/
 data/
 *.png
 /wandb/
+
+*.pt
