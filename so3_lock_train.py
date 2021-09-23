@@ -68,15 +68,15 @@ if __name__ == "__main__":
     R_2 = euler_to_rmat(torch.tensor(0.0), torch.tensor(2 * pi / 3), torch.tensor(0.0))[None].to(device)
 
     for i in range(10000):
-            i += 1
-            weight = torch.rand(BATCH, 1).to(device)
-            truepos = so3_lerp(R_1, R_2, weight)
-            loss = process(truepos)
-            optim.zero_grad()
-            loss.backward()
-            optim.step()
-            if i % 10 == 0:
-                wandb.log({"loss": loss})
-                print(loss.item())
-            if i % 1000 == 0:
-                torch.save(net.state_dict(), "weights_so3_lock.pt")
+        weight = torch.rand(BATCH, 1).to(device)
+        truepos = so3_lerp(R_1, R_2, weight)
+        loss = process(truepos)
+        optim.zero_grad()
+        loss.backward()
+        optim.step()
+        if i % 10 == 0:
+            wandb.log({"loss": loss})
+            print(loss.item())
+        if i % 1000 == 0:
+            torch.save(net.state_dict(), "weights_so3_lock.pt")
+    torch.save(net.state_dict(), "weights_so3_lock.pt")
