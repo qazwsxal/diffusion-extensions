@@ -27,7 +27,7 @@ class IsotropicGaussianSO3(Distribution):
         pdf_val_sums = pdf_sample_vals[...,:-1] + pdf_sample_vals[...,1:]
         pdf_loc_diffs = torch.diff(pdf_sample_locs, dim=0)
         self.trap = (pdf_loc_diffs * pdf_val_sums / 2).cumsum(dim=-1)
-        self.trap /= self.trap[:, -1, None]
+        self.trap /= self.trap[:, -1, None].clone()
         self.trap_loc = pdf_sample_locs[1:]
         super().__init__()
 

@@ -321,9 +321,8 @@ class SO3Diffusion(GaussianDiffusion):
             return model_mean
         else:
             # no noise when t == 0
-            nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(t.shape) - 1)))
-            model_stdev = (0.5 * model_log_variance).exp() * nonzero_mask
-            sample = IsotropicGaussianSO3(model_stdev).sample()
+            model_stdev = (0.5 * model_log_variance).exp()
+            sample = IsotropicGaussianSO3(model_stdev[0]).sample([b])
             return model_mean @ sample
 
     @torch.no_grad()
