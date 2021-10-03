@@ -1,5 +1,6 @@
+from mayavi import mlab
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from colors import *
 from rotations import *
 import torch
 import torch.nn as nn
@@ -15,40 +16,57 @@ weights = torch.linspace(0, 1, points)
 distrib = so3_lerp(R_1_1[None], R_2_1[None], weights[:, None])
 
 x, y, z = rmat_to_euler(distrib)
+distrib_back = euler_to_rmat(x,y,z)
 
 fig, axlist = plt.subplots(nrows=3, ncols=1, sharex=True)
-axlist[0].plot(x, c="#1f77b4")
-axlist[1].plot(y, c="#ff7f0e")
-axlist[2].plot(z, c="#2ca02c")
+axlist[0].plot(x, c=BLUE)
+axlist[1].plot(y, c=ORANGE)
+axlist[2].plot(z, c=GREEN)
 plt.show()
 
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-ax.scatter(*distrib[:, :, 0].T, c="#1f77b4")
-ax.scatter(*distrib[:, :, 1].T, c="#ff7f0e")
-ax.scatter(*distrib[:, :, 2].T, c="#2ca02c")
-plt.show()
+# Define sphere
+count = 101
+cos = torch.cos
+sin = torch.sin
+phi = torch.linspace(0, pi, count)
+theta = torch.linspace(0, 2 * pi, count)
 
-width = 50
-smooth = nn.Conv1d(1, 1, width)
-smooth.weight.data = torch.ones_like(smooth.weight.data) / width
-smooth.bias.data = torch.zeros_like(smooth.bias.data)
-with torch.no_grad():
-    x_smooth = smooth(x[None, None] + 0.05 * torch.randn_like(x[None, None]))[0, 0]
-    y_smooth = smooth(y[None, None] + 0.05 * torch.randn_like(y[None, None]))[0, 0]
-    z_smooth = smooth(z[None, None] + 0.05 * torch.randn_like(z[None, None]))[0, 0]
+phi, theta = torch.meshgrid(phi, theta)
+x = sin(phi) * cos(theta)
+y = sin(phi) * sin(theta)
+z = cos(phi)
+points = torch.stack((x, y, z), dim=0)
+axes = torch.eye(3)
 
-fig, axlist = plt.subplots(nrows=3, ncols=1, sharex=True)
-axlist[0].plot(x_smooth, c="#1f77b4")
-axlist[1].plot(y_smooth, c="#ff7f0e")
-axlist[2].plot(z_smooth, c="#2ca02c")
-plt.show()
+mlab.figure(1, bgcolor=(1, 1, 1), fgcolor=(0, 0, 0), size=(800, 800))
+mlab.clf()
+obj = mlab.mesh(x.numpy(),
+                y.numpy(),
+                z.numpy(),
+                color=(0.9, 0.9, 0.9),
+                opacity=0.2,
+                transparent=True,
+                )
+# Draw axes
 
-distrib_euler_smooth = euler_to_rmat(x_smooth, y_smooth, z_smooth)
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-ax.plot(*distrib_euler_smooth[:, :, 0].T, c="#1f77b4")
-ax.plot(*distrib_euler_smooth[:, :, 1].T, c="#ff7f0e")
-ax.plot(*distrib_euler_smooth[:, :, 2].T, c="#2ca02c")
-plt.show()
-print('aaa')
+mlab.plot3d([0, 1], [0, 0], [0, 0], color=GREY_F, tube_radius=None)
+mlab.plot3d([0, 0], [0, 1], [0, 0], color=GREY_F, tube_radius=None)
+mlab.plot3d([0, 0], [0, 0], [0, 1], color=GREY_F, tube_radius=None)
+mlab.text3d(0.7, 0, 0, 'X', color=BLUE_F, scale=0.05)
+mlab.text3d(0, 0.7, 0, 'Y', color=ORANGE_F, scale=0.05)
+mlab.text3d(0, 0, 0.7, 'Z', color=GREEN_F, scale=0.05)
+x_p, y_p, z_p = torch.unbind(distrib, dim=2)
+opts = dict(resolution=20, transparent=True, opacity=1.0, scale_mode='none', scale_factor=0.07)
+mlab.points3d(*x_p.T, color=BLUE_F, **opts)
+mlab.points3d(*y_p.T, color=ORANGE_F, **opts)
+mlab.points3d(*z_p.T, color=GREEN_F, **opts)
+mlab.view(azimuth=60,
+          elevation=60,
+          distance=6.2,
+          focalpoint=(0.0, 0.0, 0.0),
+          )
+
+mlab.gcf().scene.parallel_projection = True
+mlab.gcf().scene.camera.parallel_scale = 1.0
+mlab.show()
+print('aaaa')
