@@ -14,7 +14,7 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     net = EulerRotPredict().to(device)
-    net.load_state_dict(torch.load("weights_euler_lock.pt", map_location=device))
+    net.load_state_dict(torch.load("weights/weights_euler_lock.pt", map_location=device))
     net.eval()
     process = GaussianDiffusion(net, loss_type="l2", image_size=None).to(device)
     with torch.no_grad():

@@ -79,4 +79,4 @@ if __name__ == "__main__":
                 wandb.log({"loss": loss})
                 print(loss.item())
             if i % 1000 == 0:
-                torch.save(net.state_dict(), "weights_so3.pt")
+                torch.save(net.state_dict(), "weights/weights_so3.pt")

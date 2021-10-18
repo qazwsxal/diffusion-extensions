@@ -92,5 +92,5 @@ if __name__ == "__main__":
             wandb.log({"loss": sumloss / 10})
             sumloss = 0
         if i % 1000 == 0:
-            torch.save(net.state_dict(), "weights_so3_lock.pt")
-    torch.save(net.state_dict(), "weights_so3_lock.pt")
+            torch.save(net.state_dict(), "weights/weights_so3_lock.pt")
+    torch.save(net.state_dict(), "weights/weights_so3_lock.pt")

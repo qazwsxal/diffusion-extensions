@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     net = RotPredict(out_type="skewvec").to(device)
-    net.load_state_dict(torch.load("weights_so3_lock.pt", map_location=device))
+    net.load_state_dict(torch.load("weights/weights_so3_lock.pt", map_location=device))
     net.eval()
     process = SO3Diffusion(net, loss_type="skewvec").to(device)
     with torch.no_grad():

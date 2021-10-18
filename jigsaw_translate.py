@@ -136,4 +136,4 @@ if __name__ == "__main__":
         optim.zero_grad()
         loss.backward()
         optim.step()
-    torch.save(convnet.state_dict(), "weights_jig-trans.pt")
+    torch.save(convnet.state_dict(), "weights/weights_jig-trans.pt")

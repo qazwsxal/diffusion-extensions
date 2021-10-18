@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     net, = init_from_dict(vars(args), RotPredict)
     net.to(device)
-    net.load_state_dict(torch.load("weights_aircraft.pt", map_location=device))
+    net.load_state_dict(torch.load("weights/weights_aircraft.pt", map_location=device))
     net.eval()
     process = ProjectedSO3Diffusion(net).to(device)
 
@@ -83,5 +83,5 @@ if __name__ == "__main__":
         start = b * args.batch
         end = start + len(angle)
         res[start:end] = angle.detach().cpu().squeeze()
-    torch.save(res, "angles.pt")
+    torch.save(res, "weights/angles.pt")
 

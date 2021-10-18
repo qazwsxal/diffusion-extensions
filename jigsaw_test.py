@@ -13,7 +13,7 @@ np.random.seed(1234)
 
 device = torch.device("cpu")
 
-convnet.load_state_dict(torch.load("weights_jig-trans.pt", map_location=device))
+convnet.load_state_dict(torch.load("weights/weights_jig-trans.pt", map_location=device))
 convnet = convnet.to(device)
 
 # Tracing out several paths to get an idea of what a process could look like:

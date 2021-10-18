@@ -136,7 +136,7 @@ if __name__ == "__main__":
 
             # Validation
             if i % 100 == 0:
-                torch.save(net.state_dict(), "weights_aircraft.pt")
+                torch.save(net.state_dict(), "weights/weights_aircraft.pt")
                 with torch.no_grad():
                     x_recon = process.denoise_fn(proj_x_noisy_v, t_v)
                 test_loss = F.mse_loss(x_recon, descaled_noise_v)
@@ -145,4 +145,4 @@ if __name__ == "__main__":
             i += 1
             wandb.log(logdict)
 
-    torch.save(net.state_dict(), "weights_aircraft.pt")
+    torch.save(net.state_dict(), "weights/weights_aircraft.pt")
