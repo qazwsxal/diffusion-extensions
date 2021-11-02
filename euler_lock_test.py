@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from euler_lock_train import EulerRotPredict
 from tqdm import tqdm
-from rotations import *
+from util import *
 from colors import *
 from diffusion import GaussianDiffusion
 

@@ -4,7 +4,6 @@ import torch.nn as nn
 
 from diffusion import SO3Diffusion
 from models import SinusoidalPosEmb, Siren
-from rotations import six2rmat
 
 from util import *
 

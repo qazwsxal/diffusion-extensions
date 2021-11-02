@@ -4,7 +4,6 @@ import torch.nn as nn
 
 from diffusion import GaussianDiffusion
 from models import SinusoidalPosEmb, ResLayer
-from rotations import *
 from math import pi
 
 from util import *

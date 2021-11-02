@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.distributions import Distribution, constraints
 
-from rotations import aa_to_rmat, rmat_to_aa, rmat_dist
+from util import *
 
 
 class IsotropicGaussianSO3(Distribution):

@@ -8,8 +8,7 @@ from datasets import ShapeNet
 from diffusion import ProjectedSO3Diffusion, extract
 from distributions import IsotropicGaussianSO3
 from models import SinusoidalPosEmb, Siren, ResLayer, PointCloudProj
-from rotations import skew2vec, log_rmat
-from util import init_from_dict
+from util import skew2vec, log_rmat, init_from_dict
 
 
 class RotPredict(nn.Module):

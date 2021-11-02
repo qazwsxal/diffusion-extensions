@@ -4,10 +4,9 @@ import torch.nn as nn
 
 from diffusion import SO3Diffusion
 from models import SinusoidalPosEmb, ResLayer
-from rotations import *
+from util import *
 from math import pi
 
-from util import *
 
 
 class RotPredict(nn.Module):

@@ -5,7 +5,7 @@ from datasets import ShapeNet
 from models import PointCloudProj
 from mpl_utils import *
 from tqdm import tqdm, trange
-from rotations import *
+from util import *
 from diffusion import ProjectedSO3Diffusion
 
 SAMPLES = 8

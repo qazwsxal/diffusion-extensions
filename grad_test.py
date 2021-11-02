@@ -6,7 +6,7 @@ from mpl_toolkits import mplot3d
 from torch.utils.data import DataLoader
 
 from datasets import ShapeNet
-from rotations import skew2vec, log_rmat
+from util import skew2vec, log_rmat
 
 
 def draw_rot_grads(rot, grads, fig=None):

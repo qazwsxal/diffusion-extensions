@@ -3,7 +3,7 @@ import torch
 from so3_train import RotPredict
 from mpl_utils import *
 from tqdm import tqdm
-from rotations import *
+from util import *
 
 from diffusion import SO3Diffusion
 

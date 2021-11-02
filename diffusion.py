@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from functools import partial
 
-from rotations import *
+from util import *
 from denoising_diffusion_pytorch.denoising_diffusion_pytorch \
     import (extract,
             exists,

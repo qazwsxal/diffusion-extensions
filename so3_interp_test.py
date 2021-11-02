@@ -1,7 +1,7 @@
 from mayavi import mlab
 import matplotlib.pyplot as plt
 from colors import *
-from rotations import *
+from util import *
 import torch
 import torch.nn as nn
 from math import pi
