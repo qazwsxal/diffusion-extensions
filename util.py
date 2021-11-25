@@ -1,13 +1,49 @@
 import inspect
-from functools import reduce
-from operator import matmul
-from typing import Tuple, Iterable
 from collections import namedtuple
+from typing import Tuple, Iterable
+
 import torch
 
 
-AffineT = namedtuple("AffineT", ['rot', 'shift'])
+class AffineT(object):
+    def __init__(self, rot: torch.Tensor, shift: torch.Tensor):
+        super().__init__()
+        self.rot = rot
+        self.shift = shift
+
+    def __len__(self):
+        return max(len(self.rot), len(self.shift))
+
+    def __getitem__(self, item):
+        return AffineT(self.rot[item], self.shift[item])
+
+    @property
+    def device(self):
+        return self.rot.device
+
+    def to(self, device):
+        self.rot.to(device)
+        self.shift.to(device)
+        return self
+
+
+class AffineGrad(object):
+    def __init__(self, rot_g, shift_g):
+        super().__init__()
+        self.rot_g = rot_g
+        self.shift_g = shift_g
+
+    def __len__(self):
+        return max(len(self.rot_g), len(self.shift_g))
+
+    def __getitem__(self, item):
+        return AffineGrad(self.rot_g[item], self.shift_g[item])
+
+
 AffineGrad = namedtuple("AffineGrad", ['rot_g', 'shift_g'])
+
+ProtData = namedtuple("ProtData", ['residues', 'positions', 'angles'])
+
 
 @torch.jit.script
 def rmat2six(x: torch.Tensor) -> torch.Tensor:
@@ -191,7 +227,7 @@ def se3_lerp(transf_a: AffineT, transf_b: AffineT, weight: torch.Tensor) -> Affi
     # once we have rot_c, use axis-angle forms to lerp angle
     rot_a = transf_a.rot
     rot_b = transf_b.rot
-    rot_lerps = so3_lerp(rot_a,rot_b, weight)
+    rot_lerps = so3_lerp(rot_a, rot_b, weight)
     shift_a = transf_a.shift
     shift_b = transf_b.shift
     shift_lerps = torch.lerp(shift_a, shift_b, weight)
@@ -201,7 +237,7 @@ def se3_lerp(transf_a: AffineT, transf_b: AffineT, weight: torch.Tensor) -> Affi
 
 def se3_scale(transf: AffineT, scalars) -> AffineT:
     rot_scaled = so3_scale(transf.rot, scalars)
-    shift_scaled = transf.shift * scalars
+    shift_scaled = transf.shift * scalars[..., None]
     return AffineT(rot_scaled, shift_scaled)
 
 
@@ -244,13 +280,13 @@ def euler_to_rmat(x, y, z):
     return R
 
 
-
-
 def to_device(device, *objects, non_blocking=False):
     gpu_objects = []
     for object in objects:
         if isinstance(object, torch.Tensor):
             gpu_objects.append(object.to(device, non_blocking=non_blocking))
+        elif isinstance(object, ProtData):
+            gpu_objects.append(ProtData(*to_device(device, *object)))
         elif isinstance(object, Iterable):
             gpu_objects.append(to_device(device, *object))
         else:
@@ -279,6 +315,11 @@ def init_from_dict(argdict, *classes):
         class_kwargs = {k: v for k, v in argdict.items() if k in args}
         objs.append(cls(**class_kwargs))
     return objs
+
+
+def identity(x):
+    return x
+
 
 if __name__ == "__main__":
     x, y, z = torch.tensor(0.14159), torch.tensor(-1.0), torch.tensor(2.4)

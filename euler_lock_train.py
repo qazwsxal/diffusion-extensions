@@ -5,7 +5,6 @@ import torch.nn as nn
 from diffusion import GaussianDiffusion
 from models import SinusoidalPosEmb, ResLayer
 from math import pi
-
 from util import *
 
 

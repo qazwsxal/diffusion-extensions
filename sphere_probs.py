@@ -1,9 +1,11 @@
-from mayavi import mlab
 import numpy as np
 from PIL import Image
 import distributions
 import torch
-
+import os
+assert(os.environ['ETS_TOOLKIT'] == 'qt4')
+from mayavi import mlab
+mlab.test_plot3d()
 # Set up colour maps:
 VMAX = 15.0
 VMIN = -7.0

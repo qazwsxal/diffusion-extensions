@@ -10,3 +10,5 @@ data/
 /wandb/
 
 *.pt
+
+rotations.eps

@@ -13,7 +13,7 @@ from denoising_diffusion_pytorch.denoising_diffusion_pytorch \
             cosine_beta_schedule,
             )
 from tqdm import tqdm
-from distributions import IsotropicGaussianSO3
+from distributions import IsotropicGaussianSO3, IGSO3xR3
 
 
 def noise_like(shape, device, repeat=False):
@@ -188,7 +188,7 @@ class GaussianDiffusion(nn.Module):
 
     def forward(self, x, *args, **kwargs):
         b = x.shape[0]
-        device =  x.device
+        device = x.device
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
         return self.p_losses(x, t, *args, **kwargs)
 
@@ -278,7 +278,7 @@ class ProjectedGaussianDiffusion(GaussianDiffusion):
 
 
 class SO3Diffusion(GaussianDiffusion):
-    def __init__(self, denoise_fn, timesteps=1000, loss_type='prevstep', betas=None):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='skewvec', betas=None):
         super().__init__(denoise_fn, image_size=None, timesteps=timesteps, loss_type=loss_type, betas=betas)
         self.register_buffer("identity", torch.eye(3))
 
@@ -374,7 +374,7 @@ class SO3Diffusion(GaussianDiffusion):
 
 
 class ProjectedSO3Diffusion(SO3Diffusion):
-    def __init__(self, denoise_fn, timesteps=1000, loss_type='backprop', betas=None):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='skewvec', betas=None):
         super().__init__(denoise_fn, timesteps=timesteps, loss_type=loss_type, betas=betas)
         self.register_buffer("identity", torch.eye(3))
 
@@ -417,5 +417,147 @@ class ProjectedSO3Diffusion(SO3Diffusion):
     def forward(self, x, projection, *args, **kwargs):
         self.projection = projection
         b, *_, device = *x.shape, x.device
+        t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        return self.p_losses(x, t, *args, **kwargs)
+
+
+class SE3Diffusion(GaussianDiffusion):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None):
+        super().__init__(denoise_fn, image_size=None, timesteps=timesteps, loss_type=loss_type, betas=betas)
+        self.register_buffer("identity", torch.eye(3))
+
+    def q_mean_variance(self, x_start, t):
+        mean = se3_scale(x_start, extract(self.sqrt_alphas_cumprod, t, x_start.shape))
+        variance = extract(1. - self.alphas_cumprod, t, x_start.shape)
+        log_variance = extract(self.log_one_minus_alphas_cumprod, t, x_start.shape)
+        return mean, variance, log_variance
+
+    def predict_start_from_noise(self, x_t, t, noise: AffineGrad):
+        x_t_term = se3_scale(x_t, extract(self.sqrt_recip_alphas_cumprod, t, t.shape))
+        noise_scale = extract(self.sqrt_recipm1_alphas_cumprod, t, t.shape)[..., None]
+        noise_rg_vec = noise.rot_g * noise_scale
+        noise_rot = torch.matrix_exp(vec2skew(noise_rg_vec))
+        noise_shift = noise.shift_g * noise_scale
+
+        # Translation = subtraction,
+        # Rotation = multiply by inverse op (matrices, so transpose)
+
+        return AffineT(x_t_term.rot @ noise_rot.transpose(-1, -2), x_t_term.shift - noise_shift)
+
+    def q_posterior(self, x_start, x_t, t):
+        c_1 = se3_scale(x_start, extract(self.posterior_mean_coef1, t, t.shape))
+        c_2 = se3_scale(x_t, extract(self.posterior_mean_coef2, t, t.shape))
+        posterior_mean = AffineT(c_1.rot @ c_2.rot, c_1.shift + c_2.shift)
+
+        posterior_variance = extract(self.posterior_variance, t, t.shape)
+        posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, t.shape)
+        return posterior_mean, posterior_variance, posterior_log_variance_clipped
+
+    def p_mean_variance(self, x, t, clip_denoised: bool):
+        predict = self.denoise_fn(x, t)
+        x_recon = self.predict_start_from_noise(x, t=t, noise=predict)
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
+
+        return model_mean, posterior_variance, posterior_log_variance
+
+    @torch.no_grad()
+    def p_sample(self, x, t, clip_denoised=False, repeat_noise=False):
+        b, *_, device = *x.shape, x.device
+        model_mean, _, model_log_variance = self.p_mean_variance(x=x, t=t, clip_denoised=clip_denoised)
+
+        if (t == 0.0).all():
+            return model_mean
+        else:
+            # no noise when t == 0
+            model_stdev = (0.5 * model_log_variance).exp()
+            sample = IGSO3xR3(eps=model_stdev[0], mean=model_mean).sample([b])
+            return sample
+
+    @torch.no_grad()
+    def p_sample_loop(self, shape):
+        device = self.betas.device
+        b = shape[0]
+        # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
+        x, _ = torch.qr(torch.randn((b, 3, 3)))
+
+        for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+            x = self.p_sample(x, torch.full((b,), i, device=device, dtype=torch.long))
+        return x
+
+    def q_sample(self, x_start, t, noise=None):
+        if noise is None:
+            eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
+            noise = IGSO3xR3(eps).sample()
+
+        scale = extract(self.sqrt_alphas_cumprod, t, t.shape)
+        x_blend = se3_scale(x_start, scale)
+        return AffineT(x_blend.rot @ noise.rot, x_blend.shift + noise.shift)
+
+    def p_losses(self, x_start, t, noise=None):
+        eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
+        noise = IGSO3xR3(eps).sample()
+        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        x_recon = self.denoise_fn(x_noisy, t)
+
+        descaled_rot = skew2vec(log_rmat(noise.rot)) * (1 / eps)[..., None]
+        descaled_shift = noise.shift * (1 / eps)[..., None]
+        if self.loss_type == "grad_mse":
+            loss = F.mse_loss(x_recon.shift, descaled_shift) + F.mse_loss(x_recon.rot, descaled_rot)
+        else:
+            RuntimeError(f"Unexpected loss_type: {self.loss_type}")
+        return loss
+
+    def forward(self, x, *args, **kwargs):
+        b, *_, device = *x.shape, x.device
+        t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        return self.p_losses(x, t, *args, **kwargs)
+
+
+class ProjectedSE3Diffusion(SE3Diffusion):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None):
+        super().__init__(denoise_fn, timesteps=timesteps, loss_type=loss_type, betas=betas)
+        self.register_buffer("identity", torch.eye(3))
+
+    def p_mean_variance(self, x, t, clip_denoised: bool):
+        proj_x = self.projection(x)
+        predict = self.denoise_fn(proj_x, t)
+        x_recon = self.predict_start_from_noise(x, t=t, noise=predict)
+
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
+        return model_mean, posterior_variance, posterior_log_variance
+
+    @torch.no_grad()
+    def p_sample_loop(self, shape, projection):
+        self.projection = projection
+        device = self.betas.device
+        b = shape[0]
+        # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
+        x_rot, _ = torch.qr(torch.randn((b, 3, 3)))
+        x_shift = torch.randn((b, 3))
+        x = AffineT(x_rot, x_shift)
+        for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+            x = self.p_sample(x, torch.full((b,), i, device=device, dtype=torch.long))
+        return x
+
+    def p_losses(self, x_start, t, noise=None):
+        eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
+        noise = IGSO3xR3(eps).sample()
+        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        proj_x_noisy = self.projection(x_noisy)
+        x_recon = self.denoise_fn(proj_x_noisy, t)
+        descaled_shift = (noise.shift) * (1 / eps)[..., None]
+        descaled_rot = skew2vec(log_rmat(noise.rot)) * (1 / eps)[..., None]
+        loss_shift = F.mse_loss(x_recon.shift_g, descaled_shift)
+        loss_rot = F.mse_loss(x_recon.rot_g, descaled_rot)
+        loss = loss_shift + loss_rot
+        if self.loss_type != 'grad_mse':
+            RuntimeError(f"Unexpected loss_type: {self.loss_type}")
+
+        return loss
+
+    def forward(self, x, projection, *args, **kwargs):
+        self.projection = projection
+        b = len(x)
+        device = x.device
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
         return self.p_losses(x, t, *args, **kwargs)

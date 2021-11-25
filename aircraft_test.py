@@ -1,9 +1,6 @@
-import torch
-
 from aircraft_rotate import *
 from datasets import ShapeNet
 from models import PointCloudProj
-from mpl_utils import *
 from tqdm import tqdm, trange
 from util import *
 from diffusion import ProjectedSO3Diffusion
