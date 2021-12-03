@@ -2,7 +2,6 @@ import math
 from typing import Tuple
 
 import torch
-from einops import rearrange
 from se3_transformer_pytorch import SE3Transformer
 from se3_transformer_pytorch.se3_transformer_pytorch import LinearSE3, Fiber
 from torch import nn
@@ -93,18 +92,18 @@ class SE3Pool(nn.Module):
         self.lin = LinearSE3(fiber, fiber)
 
     def forward(self, x, mask):
-        weight = (self.pool(x["0"][...,0]) * mask[...,None]).unsqueeze(-1)
-        w_sum = weight.sum(dim=-3,keepdim=True)
+        weight = (self.pool(x["0"][..., 0]) * mask[..., None]).unsqueeze(-1)
+        w_sum = weight.sum(dim=-3, keepdim=True)
         val = self.lin(x)
-        out = {k: (v * weight).sum(dim=-3,keepdim=True) / w_sum for k, v in val.items()}
+        out = {k: (v * weight).sum(dim=-3, keepdim=True) / w_sum for k, v in val.items()}
         return out
 
 
 class ProtNet(nn.Module):
     def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,
-                 c_depth=3):
+                 c_depth=3, pool_depth=4):
         super().__init__()
-        self.time_emb = SinusoidalPosEmb(dim)
+        self.time_emb = SinusoidalPosEmb(dim // 2)
         self.se3trans = SE3Transformer(
             dim=dim,
             heads=heads,
@@ -129,12 +128,12 @@ class ProtNet(nn.Module):
         self.pooltrans = SE3Transformer(
             dim=dim,
             heads=heads,
-            depth=t_depth,
+            depth=pool_depth,
             dim_head=dim_head,
             input_degrees=num_degrees,
             num_degrees=num_degrees,
             output_degrees=2,
-            num_neighbors=1,
+            num_neighbors=num_neighbours,
             )
         self.res_conv = nn.Sequential(
             nn.Conv1d(
@@ -166,14 +165,17 @@ class ProtNet(nn.Module):
                                   Fiber({"1": dim}),
                                   )
 
-        self.downsample = LinearSE3(Fiber({"0": dim,
-                                           "1": dim}),
-                                    Fiber({"1": 2}),
+        self.downsample = LinearSE3(Fiber({str(x): dim for x in range(num_degrees)}),
+                                    Fiber({**{"0": dim // 2},
+                                           **{str(x): dim for x in range(1,num_degrees)}}),
                                     )
 
+        self.final_se3 = LinearSE3(Fiber({"0": dim,
+                                          "1": dim}),
+                                   Fiber({"1": 2}),
+                                   )
+
         self.pool = SE3Pool(Fiber({str(k): dim for k in range(num_degrees)}))
-
-
 
     def forward(self, x: Tuple[Tuple[ProtData, ProtData]], t):
         device = x[0][0][0].device
@@ -206,20 +208,20 @@ class ProtNet(nn.Module):
         l_fea["0"] = l_emb
         l_out = self.se3trans(l_fea, l_pos, l_msk, l_adj, return_pooled=False)
 
-
         l_out["0"] = l_out["0"].unsqueeze(-1)
 
         l_pool = self.pool(l_out, l_msk)
 
-        pool = {k:torch.cat((r_pool[k], l_pool[k]), dim=1) for k in r_pool.keys()}
+        pool = {k: torch.cat((r_pool[k], l_pool[k]), dim=1) for k in r_pool.keys()}
+        pool_ds = self.downsample(pool)
         pos = torch.stack((masked_mean(r_pos, r_msk, dim=1),
                            masked_mean(l_pos, l_msk, dim=1)),
                           dim=1)
-        time_emb = self.time_emb(t)[..., None, :, None].expand_as(pool["0"])
-        pool["0"] = pool["0"] + time_emb
-        p_out = self.pooltrans(pool, pos)
+        time_emb = self.time_emb(t)[..., None, :, None].expand_as(pool_ds["0"])
+        pool_ds["0"] = torch.cat((pool_ds["0"], time_emb), dim=-2)
+        p_out = self.pooltrans(pool_ds, pos)
         p_out["0"] = p_out["0"].unsqueeze(-1)
-        out = self.downsample(p_out)
+        out = self.final_se3(p_out)
         # shape = [b, (r/l), feat, dim], look at ligand output.
         aff_out = AffineGrad(rot_g=out["1"][:, 1, 0], shift_g=out["1"][:, 1, 1])
         return aff_out

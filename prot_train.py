@@ -60,6 +60,12 @@ if __name__ == "__main__":
         default=3,
         help="number of residue convolutional layers",
         )
+    parser.add_argument(
+        "--pool_depth",
+        type=int,
+        default=4,
+        help="number of pooled transformer layers",
+        )
 
     args = parser.parse_args()
     wandb.init(project="ProtDiffusion", entity="qazwsxal", config=args)
