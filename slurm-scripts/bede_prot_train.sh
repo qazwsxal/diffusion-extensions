@@ -19,4 +19,4 @@ CONDA_ROOT=/users/wpzx47/miniconda3
 source ${CONDA_ROOT}/etc/profile.d/conda.sh
 conda activate $PYTHON_VIRTUAL_ENVIRONMENT
 
-python3 -u prot_train.py --batch=3
+python3 -u prot_train.py --batch=2
