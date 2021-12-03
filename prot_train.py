@@ -89,21 +89,22 @@ if __name__ == "__main__":
     true_shift = torch.zeros(config["batch"], 3).to(device)
     true_pos = AffineT(shift=true_shift, rot=true_rot)
     for epoch in count():
-        for data in dl:
+        for i, data in enumerate(dl):
             ...
             data = to_device(device, *data)
             # Random transform.
             if AUGMENT:
-                transl = torch.randn(((config["batch"]), 3)).to(device)
-                rot = torch.linalg.qr(torch.randn(((config["batch"]), 3, 3)))[0].to(device)
+                transl = torch.randn((len(data), 3)).to(device)
+                rot = torch.linalg.qr(torch.randn((len(data), 3, 3)))[0].to(device)
                 aff_ts = [AffineT(shift=t, rot=r) for t,r in zip(transl, rot)]
                 data = [move_prots(t, p) for t,p in zip(aff_ts, data)]
             projection = ProtProjection(data).to(device)
 
 
-            loss = diff_model(true_pos, projection)
+            loss = diff_model(true_pos[:len(data)], projection)
             loss.backward()
             wandb.log({"loss": loss.item()})
         optim.step()
         optim.zero_grad()
-        torch.save(net.state_dict(), "weights/weights_protein.pt")
+        if epoch % 10 == 0:
+            torch.save(net.state_dict(), "weights/weights_protein.pt")
