@@ -40,8 +40,6 @@ class AffineGrad(object):
         return AffineGrad(self.rot_g[item], self.shift_g[item])
 
 
-AffineGrad = namedtuple("AffineGrad", ['rot_g', 'shift_g'])
-
 ProtData = namedtuple("ProtData", ['residues', 'positions', 'angles'])
 
 
@@ -88,7 +86,7 @@ def orthogonalise(mat):
 
     Ideally, 3D rotation matrices should be orthogonal,
     however during creation, floating point errors can build up.
-    We QR decompose our matrix as in the ideal case S is a diagonal matrix of 1s
+    We SVD decompose our matrix as in the ideal case S is a diagonal matrix of 1s
     We then round the values of S to [-1, 0, +1],
     making U @ S_rounded @ V.T an orthonormal matrix close to the original.
     """
@@ -218,7 +216,7 @@ def so3_scale(rmat, scalars):
 
 
 def se3_lerp(transf_a: AffineT, transf_b: AffineT, weight: torch.Tensor) -> AffineT:
-    ''' Weighted interpolation between rot_a and rot_b
+    ''' Weighted interpolation between transf_a and transf_a
 
     '''
     # Treat rot_b = rot_a @ rot_c
@@ -320,6 +318,15 @@ def init_from_dict(argdict, *classes):
 def identity(x):
     return x
 
+def masked_mean(tensor, mask, dim = -1):
+    diff_len = len(tensor.shape) - len(mask.shape)
+    mask = mask[(..., *((None,) * diff_len))]
+    tensor.masked_fill_(~mask, 0.)
+
+    total_el = mask.sum(dim = dim)
+    mean = tensor.sum(dim = dim) / total_el.clamp(min = 1.)
+    mean.masked_fill_(total_el == 0, 0.)
+    return mean
 
 if __name__ == "__main__":
     x, y, z = torch.tensor(0.14159), torch.tensor(-1.0), torch.tensor(2.4)
