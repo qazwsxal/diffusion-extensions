@@ -9,7 +9,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from prot_util import RES_COUNT
-from util import ProtData, AffineGrad
+from util import ProtData, AffineGrad, masked_mean
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -83,52 +83,28 @@ class PointCloudProj(nn.Module):
         return self.data @ x.transpose(-1, -2)
 
 
-class SingleQAttentionSE3(nn.Module):
-    # Dodgy Attention block that has only a single query token.
-    # allows us to do SE3 attention without the nearest-neighbour bottleneck
-    # Alternative to taking the mean that allows us to select relevant tokens,
-    # O(n) complexity due to attention matrix being 1*n
-    # "Dodgy" because we need to preserve SE3 invariance,
-    # A learned query token with type-(1,2,...) features would not be invariant to rotation.
-    # so we only calculate the attention based on type-0 features.
-
-    def __init__(self, fiber, dim_head, heads):
+class SE3Pool(nn.Module):
+    def __init__(self, fiber):
         super().__init__()
-        self.q = nn.Parameter(torch.randn(1, heads, 1, dim_head))
-        self.W_k = nn.Parameter(torch.randn((heads, fiber["0"], dim_head)) / fiber["0"] ** 0.5)
-        self.dim_head = dim_head
-        head_fiber = Fiber({"0": dim_head,
-                            "1": dim_head,
-                            })
+        self.pool = nn.Sequential(
+            nn.Linear(fiber["0"], 1),
+            nn.Sigmoid(),
+            )
+        self.lin = LinearSE3(fiber, fiber)
 
-        self.to_v = nn.ModuleList([LinearSE3(fiber, head_fiber) for _ in range(heads)])
-        headmix_fiber = Fiber({"0": dim_head * heads,
-                               "1": dim_head * heads,
-                               })
-        self.lin_out = LinearSE3(headmix_fiber, fiber)
-
-    def forward(self, x):
-        # TODO finish implementation and fix dimensionality of fibers
-        k = torch.einsum("b t d i, h d e -> b h t e", x["0"], self.W_k)
-        attn = torch.einsum("...i, ...i -> ...", k, self.q) / (self.dim_head ** 0.5)
-        attn = attn.softmax(-1)
-        v = [v_lin(x) for v_lin in self.to_v]
-
-        v_head = {k: torch.stack([f[k] for f in v], dim=1) for k in v[0].keys()}
-
-        attn_head_out = {dk: torch.einsum("b h t, b h t d i -> b h d i", attn, dv) for dk, dv in v_head.items()}
-        attn_out = {dk: rearrange(dv, 'b h d m -> b () (h d) m') for dk, dv in attn_head_out.items()}
-
-        out = self.lin_out(attn_out)
+    def forward(self, x, mask):
+        weight = (self.pool(x["0"][...,0]) * mask[...,None]).unsqueeze(-1)
+        w_sum = weight.sum(dim=-3,keepdim=True)
+        val = self.lin(x)
+        out = {k: (v * weight).sum(dim=-3,keepdim=True) / w_sum for k, v in val.items()}
         return out
 
 
 class ProtNet(nn.Module):
-    # TODO global attention
     def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,
                  c_depth=3):
         super().__init__()
-        self.time_emb = SinusoidalPosEmb(dim // 2)
+        self.time_emb = SinusoidalPosEmb(dim)
         self.se3trans = SE3Transformer(
             dim=dim,
             heads=heads,
@@ -136,7 +112,7 @@ class ProtNet(nn.Module):
             dim_head=dim_head,
             input_degrees=2,
             num_degrees=num_degrees,
-            output_degrees=2,
+            output_degrees=num_degrees,
             # this must be set to true, in which case it will assert that you pass in the adjacency matrix
             attend_sparse_neighbors=True,
             # if you set this to 0, it will only consider the connected neighbors as defined by the adjacency matrix.
@@ -150,9 +126,19 @@ class ProtNet(nn.Module):
             # # due to the nearest-neighbour restriction present in SE3 transformers,
             # global_linear_attn_every=1,
             )
+        self.pooltrans = SE3Transformer(
+            dim=dim,
+            heads=heads,
+            depth=t_depth,
+            dim_head=dim_head,
+            input_degrees=num_degrees,
+            num_degrees=num_degrees,
+            output_degrees=2,
+            num_neighbors=1,
+            )
         self.res_conv = nn.Sequential(
             nn.Conv1d(
-                in_channels=RES_COUNT + 1,
+                in_channels=RES_COUNT,
                 out_channels=dim,
                 kernel_size=(3,),
                 padding=(1,),
@@ -173,13 +159,6 @@ class ProtNet(nn.Module):
                 )
                 for _ in range(c_depth - 1)
                 ],
-            nn.Conv1d(
-                in_channels=dim,
-                out_channels=dim // 2,
-                kernel_size=(3,),
-                padding=(1,),
-                stride=(1,)
-                ),
             )
         # We need to generate an equal number of type-0 and type-1 features
         # So use an explict SE3-invariant linear transform to project up.
@@ -187,49 +166,60 @@ class ProtNet(nn.Module):
                                   Fiber({"1": dim}),
                                   )
 
-        self.last_attn = SingleQAttentionSE3(Fiber({"0": dim, "1": dim}), dim_head=dim_head, heads=heads)
         self.downsample = LinearSE3(Fiber({"0": dim,
                                            "1": dim}),
                                     Fiber({"1": 2}),
                                     )
 
+        self.pool = SE3Pool(Fiber({str(k): dim for k in range(num_degrees)}))
+
+
+
     def forward(self, x: Tuple[Tuple[ProtData, ProtData]], t):
         device = x[0][0][0].device
-        masksize = max(len(prots[0].positions) + len(prots[1].positions) for prots in x)
-        mask = torch.ones(len(x), masksize, dtype=torch.bool).to(device)
-        adjv = torch.ones(len(x), masksize - 1, dtype=torch.bool).to(device)
+        receptors, ligands = [x for x in zip(*x)]
 
-        anglist = [torch.cat((rec.angles, lig.angles), dim=0) for rec, lig in x]
-        poslist = [torch.cat((rec.positions, lig.positions), dim=0) for rec, lig in x]
-        reslist = [torch.cat((rec.residues, lig.residues), dim=0) for rec, lig in x]
-        ligmask = [torch.cat((torch.zeros(len(rec.residues), 1),
-                              torch.ones(len(lig.residues), 1)),
-                             dim=0).to(device)
-                   for rec, lig in x]
-        reslist = [torch.cat((res, lm), dim=-1) for res, lm in zip(reslist, ligmask)]
+        r_ang = pad_sequence([r.angles for r in receptors], batch_first=True)
+        r_pos = pad_sequence([r.positions for r in receptors], batch_first=True)
+        r_res = pad_sequence([r.residues for r in receptors], batch_first=True)
+        r_msk = pad_sequence([torch.ones(len(r.angles)) for r in receptors], batch_first=True).to(bool).to(device)
+        r_adj = torch.diag_embed(r_msk[..., :-1], offset=1)
+        r_adj = torch.logical_or(r_adj, r_adj.transpose(-1, -2))
 
-        angles = pad_sequence(anglist, batch_first=True)
-        positions = pad_sequence(poslist, batch_first=True)
-        residues = pad_sequence(reslist, batch_first=True)
+        r_emb = self.res_conv(r_res.transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+        r_fea = self.vec_proj({"1": r_ang})
+        r_fea["0"] = r_emb
+        r_out = self.se3trans(r_fea, r_pos, r_msk, r_adj, return_pooled=False)
+        r_out["0"] = r_out["0"].unsqueeze(-1)
 
-        resd_emb = self.res_conv(residues.transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-        time_emb = self.time_emb(t)[..., None, :, None].expand_as(resd_emb)
-        zero_emb = torch.cat((resd_emb, time_emb), dim=-2)
+        r_pool = self.pool(r_out, r_msk)
 
-        features = self.vec_proj({"1": angles})
+        l_ang = pad_sequence([l.angles for l in ligands], batch_first=True)
+        l_pos = pad_sequence([l.positions for l in ligands], batch_first=True)
+        l_res = pad_sequence([l.residues for l in ligands], batch_first=True)
+        l_msk = pad_sequence([torch.ones(len(l.angles)) for l in ligands], batch_first=True).to(bool).to(device)
+        l_adj = torch.diag_embed(l_msk[..., :-1], offset=1)
+        l_adj = torch.logical_or(l_adj, l_adj.transpose(-1, -2))
 
-        features["0"] = zero_emb
+        l_emb = self.res_conv(l_res.transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+        l_fea = self.vec_proj({"1": l_ang})
+        l_fea["0"] = l_emb
+        l_out = self.se3trans(l_fea, l_pos, l_msk, l_adj, return_pooled=False)
 
-        for i, (residue, ligand) in enumerate(x):
-            mask[i, (len(residue[0]) + len(residue[1])):] = False
-            adjv[i, len(residue[0])] = False
-        adj_mat = torch.diag_embed(adjv, offset=1).to(device)
-        adj_mat = adj_mat + adj_mat.transpose(-1, -2)
-        adj_mat = adj_mat.to(torch.bool)
 
-        t_out = self.se3trans(features, positions, mask, adj_mat, return_pooled=False)
-        # annoying squeeze of last dimension built into transformer model.
-        t_out["0"] = t_out["0"].unsqueeze(-1)
-        attn_out = self.last_attn(t_out)
-        out = self.downsample(attn_out)
-        return AffineGrad(rot_g=out["1"][:,0, 0], shift_g=out["1"][:,0, 1])
+        l_out["0"] = l_out["0"].unsqueeze(-1)
+
+        l_pool = self.pool(l_out, l_msk)
+
+        pool = {k:torch.cat((r_pool[k], l_pool[k]), dim=1) for k in r_pool.keys()}
+        pos = torch.stack((masked_mean(r_pos, r_msk, dim=1),
+                           masked_mean(l_pos, l_msk, dim=1)),
+                          dim=1)
+        time_emb = self.time_emb(t)[..., None, :, None].expand_as(pool["0"])
+        pool["0"] = pool["0"] + time_emb
+        p_out = self.pooltrans(pool, pos)
+        p_out["0"] = p_out["0"].unsqueeze(-1)
+        out = self.downsample(p_out)
+        # shape = [b, (r/l), feat, dim], look at ligand output.
+        aff_out = AffineGrad(rot_g=out["1"][:, 1, 0], shift_g=out["1"][:, 1, 1])
+        return aff_out
