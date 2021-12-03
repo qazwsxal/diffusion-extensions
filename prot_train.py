@@ -21,25 +21,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lr",
         type=float,
-        default=1e-5,
+        default=1e-4,
         help="learning rate",
         )
     parser.add_argument(
         "--dim",
         type=int,
-        default=128,
+        default=32,
         help="transformer dimension",
         )
     parser.add_argument(
         "--heads",
         type=int,
-        default=4,
+        default=2,
         help="number of self-attention heads per layer",
         )
     parser.add_argument(
         "--dim_head",
         type=int,
-        default=64,
+        default=16,
         help="dimension of self-attention head",
         )
     parser.add_argument(
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--t_depth",
         type=int,
-        default=3,
+        default=2,
         help="number of transformer layers",
         )
     parser.add_argument(
@@ -76,7 +76,7 @@ if __name__ == "__main__":
     net.to(device)
     net.train()
     wandb.watch(net, log_freq=100)
-    optim = torch.optim.Adam(net.parameters(), lr=1e-4)
+    optim = torch.optim.Adam(net.parameters(), lr=config['lr'])
     diff_model = ProjectedSE3Diffusion(net).to(device)
 
     true_rot = torch.eye(3).unsqueeze(0).expand(config["batch"], -1, -1).to(device)
