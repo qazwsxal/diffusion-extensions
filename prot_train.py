@@ -45,7 +45,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_neighbours",
         type=int,
-        default=6,
+        default=4,
         help="number of neighbours for SE3 Transformer",
         )
     parser.add_argument(

@@ -3,7 +3,7 @@ from typing import Tuple
 
 import torch
 from se3_transformer_pytorch import SE3Transformer
-from se3_transformer_pytorch.se3_transformer_pytorch import LinearSE3, Fiber
+from se3_transformer_pytorch.se3_transformer_pytorch import LinearSE3, Fiber, NormSE3
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
@@ -82,14 +82,14 @@ class PointCloudProj(nn.Module):
         return self.data @ x.transpose(-1, -2)
 
 
-class SE3Pool(nn.Module):
+class PoolSE3(nn.Module):
     def __init__(self, fiber):
         super().__init__()
         self.pool = nn.Sequential(
             nn.Linear(fiber["0"], 1),
             nn.Sigmoid(),
             )
-        self.lin = LinearSE3(fiber, fiber)
+        self.lin = FFSE3(fiber, fiber)
 
     def forward(self, x, mask):
         weight = (self.pool(x["0"][..., 0]) * mask[..., None]).unsqueeze(-1)
@@ -97,6 +97,29 @@ class SE3Pool(nn.Module):
         val = self.lin(x)
         out = {k: (v * weight).sum(dim=-3, keepdim=True) / w_sum for k, v in val.items()}
         return out
+
+
+class FFSE3(nn.Module):
+    def __init__(
+            self,
+            fiber_in,
+            fiber_out,
+            gated_scale=False,
+            mult=4,
+            ):
+        super().__init__()
+        self.fiber = fiber_in
+        fiber_hidden = Fiber(list(map(lambda t: (t[0], t[1] * mult), fiber_in)))
+
+        self.project_in = LinearSE3(fiber_in, fiber_hidden)
+        self.nonlin = NormSE3(fiber_hidden, gated_scale=gated_scale)
+        self.project_out = LinearSE3(fiber_hidden, fiber_out)
+
+    def forward(self, features):
+        outputs = self.project_in(features)
+        outputs = self.nonlin(outputs)
+        outputs = self.project_out(outputs)
+        return outputs
 
 
 class ProtNet(nn.Module):
@@ -135,6 +158,7 @@ class ProtNet(nn.Module):
             num_degrees=num_degrees,
             output_degrees=2,
             num_neighbors=num_neighbours,
+            norm_gated_scale=True,
             reversible=True,
             )
         self.res_conv = nn.Sequential(
@@ -163,21 +187,26 @@ class ProtNet(nn.Module):
             )
         # We need to generate an equal number of type-0 and type-1 features
         # So use an explict SE3-invariant linear transform to project up.
-        self.vec_proj = LinearSE3(Fiber({"1": 3}),
-                                  Fiber({"1": dim}),
-                                  )
+        self.vec_proj = FFSE3(Fiber({"1": 3}),
+                              Fiber({"1": dim}),
+                              gated_scale=True,
+                              )
 
-        self.downsample = LinearSE3(Fiber({str(x): dim for x in range(num_degrees)}),
-                                    Fiber({**{"0": dim // 2},
-                                           **{str(x): dim for x in range(1,num_degrees)}}),
-                                    )
+        self.downsample = FFSE3(Fiber({str(x): dim for x in range(num_degrees)}),
+                                Fiber({**{"0": dim // 2},
+                                       **{str(x): dim for x in range(1, num_degrees)}
+                                       }),
+                                gated_scale=True,
+                                )
 
-        self.final_se3 = LinearSE3(Fiber({"0": dim,
-                                          "1": dim}),
-                                   Fiber({"1": 2}),
-                                   )
+        self.final_se3 = FFSE3(Fiber({"0": dim,
+                                      "1": dim,
+                                      }),
+                               Fiber({"1": 2}),
+                               gated_scale=True,
+                               )
 
-        self.pool = SE3Pool(Fiber({str(k): dim for k in range(num_degrees)}))
+        self.pool = PoolSE3(Fiber({str(k): dim for k in range(num_degrees)}))
 
     def forward(self, x: Tuple[Tuple[ProtData, ProtData]], t):
         device = x[0][0][0].device
