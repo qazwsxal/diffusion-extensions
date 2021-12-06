@@ -124,6 +124,7 @@ class ProtNet(nn.Module):
             # # as otherwise we won't actually get global information flow
             # # due to the nearest-neighbour restriction present in SE3 transformers,
             # global_linear_attn_every=1,
+            reversible=True,
             )
         self.pooltrans = SE3Transformer(
             dim=dim,
@@ -134,6 +135,7 @@ class ProtNet(nn.Module):
             num_degrees=num_degrees,
             output_degrees=2,
             num_neighbors=num_neighbours,
+            reversible=True,
             )
         self.res_conv = nn.Sequential(
             nn.Conv1d(

@@ -27,7 +27,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dim",
         type=int,
-        default=32,
+        default=64,
         help="transformer dimension",
         )
     parser.add_argument(
@@ -39,19 +39,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dim_head",
         type=int,
-        default=16,
+        default=32,
         help="dimension of self-attention head",
         )
     parser.add_argument(
         "--num_neighbours",
         type=int,
-        default=8,
+        default=6,
         help="number of neighbours for SE3 Transformer",
         )
     parser.add_argument(
         "--t_depth",
         type=int,
-        default=2,
+        default=4,
         help="number of transformer layers",
         )
     parser.add_argument(
@@ -75,7 +75,8 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     dataset = ProtDataset("data/BPTI_dock")
-    dl = DataLoader(dataset, batch_size=config["batch"], shuffle=True, num_workers=4, pin_memory=True,
+    dl = DataLoader(dataset, batch_size=config["batch"], shuffle=True,
+                    num_workers=4, pin_memory=True,
                     collate_fn=identity)
 
     net, = init_from_dict(config, ProtNet)
@@ -94,10 +95,11 @@ if __name__ == "__main__":
             data = to_device(device, *data)
             # Random transform.
             if AUGMENT:
-                transl = torch.randn((len(data), 3)).to(device)
-                rot = torch.linalg.qr(torch.randn((len(data), 3, 3)))[0].to(device)
-                aff_ts = [AffineT(shift=t, rot=r) for t,r in zip(transl, rot)]
-                data = [move_prots(t, p) for t,p in zip(aff_ts, data)]
+                with torch.no_grad():
+                    transl = torch.randn((len(data), 3)).to(device)
+                    rot = torch.linalg.qr(torch.randn((len(data), 3, 3)))[0].to(device)
+                    aff_ts = [AffineT(shift=t, rot=r) for t,r in zip(transl, rot)]
+                    data = [move_prots(t, p)for t,p in zip(aff_ts, data)]
             projection = ProtProjection(data).to(device)
 
 
