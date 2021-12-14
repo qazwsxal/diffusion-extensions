@@ -94,6 +94,7 @@ class PoolSE3(nn.Module):
     def forward(self, x, mask):
         weight = (self.pool(x["0"][..., 0]) * mask[..., None]).unsqueeze(-1)
         w_sum = weight.sum(dim=-3, keepdim=True)
+        w_sum = torch.max(w_sum, 1e-4*torch.ones_like(w_sum))
         val = self.lin(x)
         out = {k: (v * weight).sum(dim=-3, keepdim=True) / w_sum for k, v in val.items()}
         return out
