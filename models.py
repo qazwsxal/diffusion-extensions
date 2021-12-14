@@ -121,6 +121,52 @@ class FFSE3(nn.Module):
         outputs = self.project_out(outputs)
         return outputs
 
+class PlaneNet(nn.Module):
+    def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,):
+        super().__init__()
+        self.dim = dim
+        self.time_emb = SinusoidalPosEmb(dim)
+        self.se3trans = SE3Transformer(
+            dim=dim,
+            heads=heads,
+            depth=t_depth,
+            dim_head=dim_head,
+            input_degrees=2,
+            num_degrees=num_degrees,
+            output_degrees=num_degrees,
+            num_neighbors=num_neighbours,
+            reversible=True,
+            )
+
+        self.final_se3 = FFSE3(Fiber({str(x): dim for x in range(num_degrees)}),
+                               Fiber({"1": 1}),
+                               gated_scale=True,
+                               )
+
+        self.pool = PoolSE3(Fiber({str(k): dim for k in range(num_degrees)}))
+        self.register_buffer("t1_diag", torch.eye(3)[None, None,...])
+
+    def forward(self, pos, t):
+        device = pos.device
+        b, p, *_ = pos.shape
+        msk = torch.ones_like(pos[...,0])
+        time_emb = self.time_emb(t)[..., None, :, None]
+        t0_feats = time_emb.expand(-1,pos.shape[1], -1, -1)
+
+        t1_feats = torch.zeros(b,p,self.dim,3, device=device)
+        t1_feats[:,:,:3,:] = self.t1_diag
+        feats = {"0": t0_feats,
+                 "1": t1_feats,
+                 }
+        t_out = self.se3trans(feats, pos, return_pooled=False)
+
+        t_out["0"] = t_out["0"].unsqueeze(-1)
+
+        pool = self.pool(t_out, msk)
+
+        out = self.final_se3(pool)
+        # shape = [b, pool, feat, dim], look at ligand output.
+        return out["1"][:,0,0]
 
 class ProtNet(nn.Module):
     def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,

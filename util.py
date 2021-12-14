@@ -3,6 +3,7 @@ from collections import namedtuple
 from typing import Tuple, Iterable
 
 import torch
+from math import pi
 
 
 class AffineT(object):
@@ -122,7 +123,7 @@ def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
 
 # We use atan2 instead of acos here dut to better numerical stability.
 # it means we get nicer behaviour around 0 degrees
-# More effort to derive cos terms
+# More effort to derive sin terms
 # but as we're dealing with small angles a lot,
 # the tradeoff is worth it.
 @torch.jit.script
@@ -134,7 +135,7 @@ def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
     angle = torch.atan2(s_angle, c_angle)
     scale = (angle / (2 * s_angle))
     scale[angle == 0.0] = 0.0
-    # if s_angle = 0, i.e. rotation by 0 or pi, we get NaNs
+    # if s_angle = 0, i.e. rotation by 0 or pi (180), we get NaNs
     # by definition, scale values are 0 if rotating by 0.
     # This also breaks down if rotating by pi, but idk how to fix that.
     log_r_mat = scale[..., None, None] * skew_mat
@@ -318,15 +319,17 @@ def init_from_dict(argdict, *classes):
 def identity(x):
     return x
 
-def masked_mean(tensor, mask, dim = -1):
+
+def masked_mean(tensor, mask, dim=-1):
     diff_len = len(tensor.shape) - len(mask.shape)
     mask = mask[(..., *((None,) * diff_len))]
     tensor.masked_fill_(~mask, 0.)
 
-    total_el = mask.sum(dim = dim)
-    mean = tensor.sum(dim = dim) / total_el.clamp(min = 1.)
+    total_el = mask.sum(dim=dim)
+    mean = tensor.sum(dim=dim) / total_el.clamp(min=1.)
     mean.masked_fill_(total_el == 0, 0.)
     return mean
+
 
 if __name__ == "__main__":
     x, y, z = torch.tensor(0.14159), torch.tensor(-1.0), torch.tensor(2.4)
@@ -350,3 +353,10 @@ if __name__ == "__main__":
     log_mat = vec2skew(rotvec)
     rot_mat = torch.matrix_exp(log_mat)
     print(rot_mat)
+
+    rot_pi = torch.tensor([[-1.0, 0.0, 0.0],
+                           [0.0, -1.0, 0.0],
+                           [0.0, 0.0, 1.0],
+                           ])
+
+    log_r_pi = log_rmat(rot_pi)

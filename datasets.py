@@ -1,9 +1,10 @@
 import h5py
 from torch.utils.data import Dataset
-
+import torch
 
 class ShapeNet(Dataset):
-    def __init__(self, datatype, ids):
+    def __init__(self, datatype, ids, samples=None):
+        self.samples = samples
         if isinstance(ids, int):
             ids = (ids,)
         if datatype == 'train':
@@ -21,6 +22,7 @@ class ShapeNet(Dataset):
             with h5py.File(file, 'r') as f:
                 self.datalist += [(file, i) for i, label in enumerate(f['label']) if label in ids]
         self.h5dict = dict()
+        self.probs = torch.ones((2048))/2048
 
     def __getitem__(self, item):
         file, idx = self.datalist[item]
@@ -33,8 +35,9 @@ class ShapeNet(Dataset):
         except KeyError:
             f = h5py.File(file, 'r')
             self.h5dict[file] = f
-        data = f['data'][idx]
-
+        data = torch.tensor(f['data'][idx])
+        if self.samples is not None:
+            data = data[torch.multinomial(self.probs, num_samples=self.samples)]
         return data
 
     def __len__(self):

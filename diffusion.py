@@ -402,11 +402,18 @@ class ProjectedSO3Diffusion(SO3Diffusion):
         eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
         noise = IsotropicGaussianSO3(eps).sample().detach()
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-
+        if torch.any(x_noisy.isnan()):
+            RuntimeError(f"x_noisy is NaN!")
         proj_x_noisy = self.projection(x_noisy)
+        if torch.any(proj_x_noisy.isnan()):
+            RuntimeError(f"proj_x_noisy is NaN!")
         x_recon = self.denoise_fn(proj_x_noisy, t)
 
         descaled_noise = skew2vec(log_rmat(noise)) * (1 / eps)[..., None]
+        if torch.any(descaled_noise.isnan()):
+            RuntimeError(f"descaled noise is NaN!")
+        if torch.any(x_recon.isnan()):
+            RuntimeError(f"x_recon is NaN!")
         loss = F.mse_loss(x_recon, descaled_noise)
 
         if self.loss_type not in ["backprop", "skewvec"]:
