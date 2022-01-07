@@ -330,6 +330,11 @@ def masked_mean(tensor, mask, dim=-1):
     mean.masked_fill_(total_el == 0, 0.)
     return mean
 
+def cycle(iterable: Iterable):
+    while True:
+        for x in iterable:
+            yield x
+
 
 if __name__ == "__main__":
     x, y, z = torch.tensor(0.14159), torch.tensor(-1.0), torch.tensor(2.4)

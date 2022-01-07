@@ -8,7 +8,7 @@ from datasets import ShapeNet
 from diffusion import ProjectedSO3Diffusion, extract
 from distributions import IsotropicGaussianSO3
 from models import SinusoidalPosEmb, Siren, ResLayer, PlaneNet, PointCloudProj
-from util import skew2vec, log_rmat, init_from_dict
+from util import skew2vec, log_rmat, init_from_dict, cycle
 
 
 if __name__ == "__main__":
@@ -91,7 +91,8 @@ if __name__ == "__main__":
         t_v = torch.randint(0, process.num_timesteps, (config['batch'],), device=device).long()
         eps_v = extract(process.sqrt_one_minus_alphas_cumprod, t_v, t_v.shape)
         noise_v = IsotropicGaussianSO3(eps_v).sample().detach()
-        data_v = next(iter(v_dl)).to(device)
+        dl_iter = cycle(v_dl)
+        data_v = next(dl_iter).to(device)
         proj_v = PointCloudProj(data_v).to(device)
         x_noisy_v = process.q_sample(x_start=truepos.repeat(config['batch'], 1, 1), t=t_v, noise=noise_v)
         proj_x_noisy_v = proj_v(x_noisy_v)
@@ -108,12 +109,18 @@ if __name__ == "__main__":
             logdict = {"loss": loss.detach()}
 
             # Validation
-            if i % 100 == 0:
-                torch.save(net.state_dict(), "weights/weights_aircraft.pt")
+            if i % 10 == 0:
                 with torch.no_grad():
+                    data_v = next(dl_iter).to(device)
+                    proj_v = PointCloudProj(data_v).to(device)
+                    x_noisy_v = process.q_sample(x_start=truepos.repeat(config['batch'], 1, 1), t=t_v, noise=noise_v)
+                    proj_x_noisy_v = proj_v(x_noisy_v)
                     x_recon = process.denoise_fn(proj_x_noisy_v, t_v)
-                test_loss = F.mse_loss(x_recon, descaled_noise_v)
-                logdict["test loss"] = test_loss.detach()
+                    test_loss = F.mse_loss(x_recon, descaled_noise_v)
+                    logdict["test loss"] = test_loss.detach()
+                    logdict["test vals"] = x_recon.detach()
+                torch.save(net.state_dict(), "weights/weights_aircraft.pt")
+
 
             i += 1
             wandb.log(logdict)
