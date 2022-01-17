@@ -77,7 +77,7 @@ if __name__ == "__main__":
     dataset = ProtDataset("data/BPTI_dock")
     dl = DataLoader(dataset, batch_size=config["batch"], shuffle=True,
                     num_workers=4, pin_memory=True,
-                    collate_fn=identity)
+                    collate_fn=identity, persistent_workers=True)
 
     net, = init_from_dict(config, ProtNet)
     net.to(device)

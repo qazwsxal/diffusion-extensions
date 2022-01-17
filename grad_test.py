@@ -38,7 +38,7 @@ if __name__ == "__main__":
     wandb.init(project='GradTest', entity='qazwsxal')
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,))
-    dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
+    dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
     data = next(iter(dl))
     data.requires_grad = True
     pred_grads = torch.randn_like(data)

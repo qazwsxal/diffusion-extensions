@@ -58,7 +58,8 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(True)
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('train', (0,), samples=config['samples'])
-    dl = DataLoader(ds, batch_size=config['batch'], shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
+    dl = DataLoader(ds, batch_size=config['batch'], shuffle=True, num_workers=4, pin_memory=True, drop_last=True,
+                    persistent_workers=True)
 
     net, = init_from_dict(config, PlaneNet)
     net.to(device)

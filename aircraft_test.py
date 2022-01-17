@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     ds = ShapeNet('test', (0,))
-    dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True)
+    dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
     res = torch.zeros((len(ds), SAMPLES))
 
     net, = init_from_dict(vars(args), PlaneNet)
