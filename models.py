@@ -107,7 +107,7 @@ class PoolRN(nn.Module):
         weight = (self.pool(x) * mask)
         w_sum = weight.sum(dim=-2, keepdim=True).clamp(min=1e-6)
         val = self.lin(x)
-        out = (val * weight).sum(dim=-2) / w_sum
+        out = (val * weight).sum(dim=-2, keepdim=True) / w_sum
         return out
 
 
@@ -176,7 +176,7 @@ class PlaneNet(nn.Module):
         # Batch first.
         encoding = self.encoder(t_in.transpose(0, 1)).transpose(0, 1)
         out = self.out_net(encoding)
-        return out
+        return out[...,0,:] # Drop sequence dimension
 
 
 class ProtNet(nn.Module):
