@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from prot_util import RES_COUNT
-from util import ProtData, AffineGrad, masked_mean
+from util import ProtData, AffineGrad, masked_mean, euler_to_rmat
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -74,12 +74,41 @@ class Siren(nn.Module):
 
 
 class PointCloudProj(nn.Module):
-    def __init__(self, data):
+    def __init__(self, data, so3=True):
         super().__init__()
         self.data = data
+        self.so3 = so3
 
     def forward(self, x):
-        return self.data @ x.transpose(-1, -2)
+        # The transpose operation here here is due to the shape of self.data.
+        # (A^T)^T = A
+        # (AB)^T = B^T A^T
+        # So for rotation R and data D:
+        # (RD^T)^T = (D^T)^T R^T = D R^T
+        if self.so3:
+            R_T = x.transpose(-1, -2)
+        else:
+            R_T = euler_to_rmat(x[..., 0], x[..., 1], x[..., 2]).transpose(-1, -2)
+        return self.data @ R_T
+
+
+class PoolRN(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.pool = nn.Sequential(
+            nn.Linear(dim, 1),
+            nn.Sigmoid(),
+            )
+        self.lin = nn.Linear(dim, dim)
+
+    def forward(self, x: torch.Tensor, mask=None):
+        if mask == None:
+            mask = torch.ones((*x.shape[:-1],1), dtype=torch.bool).to(x.device)
+        weight = (self.pool(x) * mask)
+        w_sum = weight.sum(dim=-2, keepdim=True).clamp(min=1e-6)
+        val = self.lin(x)
+        out = (val * weight).sum(dim=-2) / w_sum
+        return out
 
 
 class PoolSE3(nn.Module):
@@ -121,52 +150,34 @@ class FFSE3(nn.Module):
         outputs = self.project_out(outputs)
         return outputs
 
+
 class PlaneNet(nn.Module):
-    def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,):
+    def __init__(self, dim=512, heads=4, layers=4):
         super().__init__()
-        self.dim = dim
-        self.time_emb = SinusoidalPosEmb(dim)
-        self.se3trans = SE3Transformer(
-            dim=dim,
-            heads=heads,
-            depth=t_depth,
-            dim_head=dim_head,
-            input_degrees=2,
-            num_degrees=num_degrees,
-            output_degrees=num_degrees,
-            num_neighbors=num_neighbours,
-            reversible=True,
-            )
+        d_out = 3
+        enc_layer = nn.TransformerEncoderLayer(dim, heads)
+        self.position_siren = Siren(in_channels=3, out_channels=dim // 2, scale=30)
+        self.time_embedding = SinusoidalPosEmb(dim // 2)
+        self.encoder = nn.TransformerEncoder(enc_layer, layers)
+        self.class_token = nn.Parameter(torch.randn(1, 1, dim))
 
-        self.final_se3 = FFSE3(Fiber({str(x): dim for x in range(num_degrees)}),
-                               Fiber({"1": 1}),
-                               gated_scale=True,
-                               )
+        self.out_net = nn.Sequential(PoolRN(dim),
+                                     nn.Linear(dim, 3),
+                                     )
 
-        self.pool = PoolSE3(Fiber({str(k): dim for k in range(num_degrees)}))
-        self.register_buffer("t1_diag", torch.eye(3)[None, None,...])
 
-    def forward(self, pos, t):
-        device = pos.device
-        b, p, *_ = pos.shape
-        msk = torch.ones_like(pos[...,0])
-        time_emb = self.time_emb(t)[..., None, :, None]
-        t0_feats = time_emb.expand(-1,pos.shape[1], -1, -1)
+    def forward(self, x, t):
+        batch = x.shape[0]
+        x_emb = self.position_siren(x)
+        t_emb = self.time_embedding(t)
+        t_in = torch.cat((x_emb, t_emb[:, None, :].expand(x_emb.shape)), dim=2)
+        # Transpose batch and sequence dimension
+        # Because we're using a version of PT that doesn't support
+        # Batch first.
+        encoding = self.encoder(t_in.transpose(0, 1)).transpose(0, 1)
+        out = self.out_net(encoding)
+        return out
 
-        t1_feats = torch.zeros(b,p,self.dim,3, device=device)
-        t1_feats[:,:,:3,:] = self.t1_diag
-        feats = {"0": t0_feats,
-                 "1": t1_feats,
-                 }
-        t_out = self.se3trans(feats, pos, return_pooled=False)
-
-        t_out["0"] = t_out["0"].unsqueeze(-1)
-
-        pool = self.pool(t_out, msk)
-
-        out = self.final_se3(pool)
-        # shape = [b, pool, feat, dim], look at ligand output.
-        return out["1"][:,0,0]
 
 class ProtNet(nn.Module):
     def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,
@@ -231,7 +242,7 @@ class ProtNet(nn.Module):
                 for _ in range(c_depth - 1)
                 ],
             )
-        # We need to generate an equal number of type-0 and type-1 features
+        # We need to generate an equal number of diff_type-0 and diff_type-1 features
         # So use an explict SE3-invariant linear transform to project up.
         self.vec_proj = FFSE3(Fiber({"1": 3}),
                               Fiber({"1": dim}),

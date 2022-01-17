@@ -5,7 +5,7 @@
 
 
 #SBATCH -p "res-gpu-small"
-#SBATCH --exclude="gpu[0-6]"
+##SBATCH --exclude="gpu[0-6]"
 #SBATCH --qos="long-high-prio"
 #SBATCH -t 7-00
 

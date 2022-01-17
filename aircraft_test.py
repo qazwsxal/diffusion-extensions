@@ -1,30 +1,37 @@
-from aircraft_rotate import *
-from datasets import ShapeNet
-from models import PointCloudProj
 from tqdm import tqdm, trange
-from util import *
+from torch.utils.data import DataLoader
+
+from datasets import ShapeNet
 from diffusion import ProjectedSO3Diffusion
+from models import PointCloudProj, PlaneNet
+from util import *
 
 SAMPLES = 8
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="PyTorch Soft Actor-Critic Args")
+    parser = argparse.ArgumentParser(description="Aircraft rotation args")
     parser.add_argument(
-        "--batch", type=int, default=8, help="batch size (default: 8)"
+        "--batch", type=int, default=2, help="batch size"
         )
     parser.add_argument(
         "--lr",
         type=float,
-        default=3e-4,
+        default=1e-4,
         help="learning rate",
         )
     parser.add_argument(
-        "--d_model",
+        "--samples",
+        type=int,
+        default=256,
+        help="number of points to feed through transformer",
+        )
+    parser.add_argument(
+        "--dim",
         type=int,
         default=512,
-        help="transformer dimensionality",
+        help="transformer dimension",
         )
     parser.add_argument(
         "--heads",
@@ -39,10 +46,9 @@ if __name__ == "__main__":
         help="number of transformer layers",
         )
     parser.add_argument(
-        "--out_type",
-        type=str,
-        default="token",
-        help="how to construct output values"
+        "--so3",
+        action='store_true',
+        help="Use SO3 diffusion rather than euler angles",
         )
 
     args = parser.parse_args()
@@ -52,17 +58,18 @@ if __name__ == "__main__":
     dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=4, pin_memory=True)
     res = torch.zeros((len(ds), SAMPLES))
 
-    net, = init_from_dict(vars(args), RotPredict)
+    net, = init_from_dict(vars(args), PlaneNet)
     net.to(device)
-    net.load_state_dict(torch.load("weights/weights_aircraft.pt", map_location=device))
+    type = "so3" if vars(args)['so3'] else "eul"
+    weight_path = f"weights/weights_aircraft_{type}.pt"
+    net.load_state_dict(torch.load(weight_path, map_location=device))
     net.eval()
     process = ProjectedSO3Diffusion(net).to(device)
 
-
-    for b, data in enumerate(tqdm(dl, desc = 'batch')):
+    for b, data in enumerate(tqdm(dl, desc='batch')):
         proj = PointCloudProj(data.to(device)).to(device)
         process.projection = proj
-        results = torch.zeros((args.batch, SAMPLES, 3,3)).to(device)
+        results = torch.zeros((args.batch, SAMPLES, 3, 3)).to(device)
         for samp in trange(SAMPLES, leave=False, desc="sample number"):
             with torch.no_grad():
                 # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
@@ -74,11 +81,10 @@ if __name__ == "__main__":
                               leave=False,
                               ):
                     R = process.p_sample(R, torch.full((args.batch,), i, device=device, dtype=torch.long)).detach()
-            results[:,samp] = R
+            results[:, samp] = R
 
         axis, angle = rmat_to_aa(results)
         start = b * args.batch
         end = start + len(angle)
         res[start:end] = angle.detach().cpu().squeeze()
     torch.save(res, "weights/angles.pt")
-

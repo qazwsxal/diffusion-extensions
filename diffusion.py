@@ -46,7 +46,7 @@ class GaussianDiffusion(nn.Module):
             image_size,
             channels=3,
             timesteps=1000,
-            loss_type='l1',
+            loss_type='l2',
             betas=None
             ):
         super().__init__()
