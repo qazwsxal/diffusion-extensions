@@ -88,7 +88,7 @@ class PointCloudProj(nn.Module):
         if self.so3:
             R_T = x.transpose(-1, -2)
         else:
-            R_T = euler_to_rmat(x[..., 0], x[..., 1], x[..., 2]).transpose(-1, -2)
+            R_T = euler_to_rmat(*torch.unbind(x,-1)).transpose(-1, -2)
         return self.data @ R_T
 
 
