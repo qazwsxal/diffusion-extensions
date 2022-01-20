@@ -1,7 +1,8 @@
 import Bio.PDB as PDB
+import torch
 from torch import nn
 from torch.utils.data import Dataset
-from typing import List
+from typing import List, Union
 from pathlib import Path
 import os
 from util import *
@@ -98,12 +99,19 @@ class ProtDataset(Dataset):
 
 
 class ProtProjection(nn.Module):
-    def __init__(self, data: Iterable[Tuple[ProtData, ProtData]]):
+    def __init__(self, data: Iterable[Tuple[ProtData, ProtData]], se3=True):
         super().__init__()
         self.data = data
+        self.se3=se3
 
-    def forward(self, transforms: AffineT):
-        newligs = [move_prot(t, x[1]) for t, x in zip(transforms, self.data)]
+    def forward(self, transforms: Union[AffineT, torch.Tensor]):
+        if self.se3:
+            tfs = transforms
+        else:
+            eul = transforms[...,:3]
+            rots = euler_to_rmat(*torch.unbind(eul,-1))
+            tfs = AffineT(rots, transforms[...,3:])
+        newligs = [move_prot(t, x[1]) for t, x in zip(tfs, self.data)]
         proj_prots = [(old[0], lig) for old, lig in zip(self.data, newligs)]
         return proj_prots
 

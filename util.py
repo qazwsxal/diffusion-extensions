@@ -22,6 +22,10 @@ class AffineT(object):
     def device(self):
         return self.rot.device
 
+    @property
+    def shape(self):
+        return self.shift.shape
+
     def to(self, device):
         self.rot.to(device)
         self.shift.to(device)
