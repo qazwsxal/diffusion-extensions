@@ -52,7 +52,7 @@ BATCH = 32
 if __name__ == "__main__":
     import wandb
 
-    wandb.init(project='SO3EulerDiffusion', entity='qazwsxal', config={"type": "euler"})
+    wandb.init(project='SO3EulerDiffusion', entity='qazwsxal', config={"diff_type": "euler"})
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     net = EulerRotPredict().to(device)

@@ -8,7 +8,6 @@ from util import *
 from math import pi
 
 
-
 class RotPredict(nn.Module):
     def __init__(self, d_model=255, out_type="rotmat", in_type="rotmat"):
         super().__init__()
@@ -65,7 +64,7 @@ BATCH = 32
 if __name__ == "__main__":
     import wandb
 
-    wandb.init(project='SO3EulerDiffusion', entity='qazwsxal', config={"type": "SO3"})
+    wandb.init(project='SO3EulerDiffusion', entity='qazwsxal', config={"diff_type": "SO3"})
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     net = RotPredict(out_type="skewvec").to(device)
