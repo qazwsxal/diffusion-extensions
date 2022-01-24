@@ -3,7 +3,6 @@ from collections import namedtuple
 from typing import Tuple, Iterable
 
 import torch
-from math import pi
 
 
 class AffineT(object):
@@ -29,7 +28,12 @@ class AffineT(object):
     def to(self, device):
         self.rot.to(device)
         self.shift.to(device)
-        return self
+        return AffineT(self.rot.to(device), self.shift.to(device))
+
+    @classmethod
+    def from_euler(cls, euls: torch.Tensor, shift: torch.Tensor):
+        rot = euler_to_rmat(*torch.unbind(euls, dim=-1))
+        return cls(rot, shift)
 
 
 class AffineGrad(object):
@@ -333,6 +337,7 @@ def masked_mean(tensor, mask, dim=-1):
     mean = tensor.sum(dim=dim) / total_el.clamp(min=1.)
     mean.masked_fill_(total_el == 0, 0.)
     return mean
+
 
 def cycle(iterable: Iterable):
     while True:
