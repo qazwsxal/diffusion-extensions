@@ -10,13 +10,16 @@ from itertools import count
 AUGMENT = True
 
 if __name__ == "__main__":
-    torch.multiprocessing.set_start_method("forkserver")
+    import os
+    # Windows doesn't support process forking
+    if  os.name != 'nt':
+        torch.multiprocessing.set_start_method("forkserver")
     import wandb
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--batch", type=int, default=1, help="batch size"
+        "--batch", type=int, default=4, help="batch size"
         )
     parser.add_argument(
         "--lr",
@@ -27,31 +30,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dim",
         type=int,
-        default=64,
+        default=1024,
         help="transformer dimension",
         )
     parser.add_argument(
         "--heads",
         type=int,
-        default=2,
+        default=8,
         help="number of self-attention heads per layer",
-        )
-    parser.add_argument(
-        "--dim_head",
-        type=int,
-        default=32,
-        help="dimension of self-attention head",
         )
     parser.add_argument(
         "--t_depth",
         type=int,
-        default=4,
+        default=12,
         help="number of transformer layers",
         )
     parser.add_argument(
         "--c_depth",
         type=int,
-        default=3,
+        default=8,
         help="number of residue convolutional layers",
         )
     parser.add_argument(
@@ -69,7 +66,9 @@ if __name__ == "__main__":
     dataset = ProtDataset("data/BPTI_dock")
     dl = DataLoader(dataset, batch_size=config["batch"], shuffle=True,
                     num_workers=4, pin_memory=True,
-                    collate_fn=identity, persistent_workers=True)
+                    collate_fn=identity,
+                    persistent_workers=True,
+                    )
 
     net, = init_from_dict(config, ProtNet)
     net.to(device)
@@ -105,7 +104,6 @@ if __name__ == "__main__":
             loss = diff_model(true_pos[:len(data)], projection)
             loss.backward()
             wandb.log({"loss": loss.item()})
-            print(i)
         optim.step()
         optim.zero_grad()
         if epoch % 10 == 0:

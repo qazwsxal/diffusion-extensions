@@ -2,13 +2,12 @@ import math
 from typing import Tuple
 
 import torch
-from se3_transformer_pytorch import SE3Transformer
 from se3_transformer_pytorch.se3_transformer_pytorch import LinearSE3, Fiber, NormSE3
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from prot_util import RES_COUNT
-from util import ProtData, AffineGrad, masked_mean, euler_to_rmat
+from util import ProtData, AffineGrad, euler_to_rmat
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -88,7 +87,7 @@ class PointCloudProj(nn.Module):
         if self.so3:
             R_T = x.transpose(-1, -2)
         else:
-            R_T = euler_to_rmat(*torch.unbind(x,-1)).transpose(-1, -2)
+            R_T = euler_to_rmat(*torch.unbind(x, -1)).transpose(-1, -2)
         return self.data @ R_T
 
 
@@ -98,17 +97,17 @@ class PoolRN(nn.Module):
         self.pool = nn.Sequential(
             nn.Linear(dim, 1),
             nn.Sigmoid(),
-            )
+        )
         self.lin = nn.Linear(dim, dim)
 
     def forward(self, x: torch.Tensor, mask=None):
         if mask == None:
-            mask = torch.ones((*x.shape[:-1],1), dtype=torch.bool).to(x.device)
+            mask = torch.ones((*x.shape[:-1], 1), dtype=torch.bool).to(x.device)
         weight = (self.pool(x) * mask)
         w_sum = weight.sum(dim=-2, keepdim=True).clamp(min=1e-6)
         val = self.lin(x)
         out = (val * weight).sum(dim=-2, keepdim=True) / w_sum
-        return out
+        return out[..., 0, :]
 
 
 class PoolSE3(nn.Module):
@@ -117,7 +116,7 @@ class PoolSE3(nn.Module):
         self.pool = nn.Sequential(
             nn.Linear(fiber["0"], 1),
             nn.Sigmoid(),
-            )
+        )
         self.lin = FFSE3(fiber, fiber)
 
     def forward(self, x, mask):
@@ -135,7 +134,7 @@ class FFSE3(nn.Module):
             fiber_out,
             gated_scale=False,
             mult=4,
-            ):
+    ):
         super().__init__()
         self.fiber = fiber_in
         fiber_hidden = Fiber(list(map(lambda t: (t[0], t[1] * mult), fiber_in)))
@@ -165,7 +164,6 @@ class PlaneNet(nn.Module):
                                      nn.Linear(dim, 3),
                                      )
 
-
     def forward(self, x, t):
         batch = x.shape[0]
         x_emb = self.position_siren(x)
@@ -176,48 +174,23 @@ class PlaneNet(nn.Module):
         # Batch first.
         encoding = self.encoder(t_in.transpose(0, 1)).transpose(0, 1)
         out = self.out_net(encoding)
-        return out[...,0,:] # Drop sequence dimension
+        return out[..., 0, :]  # Drop sequence dimension
 
 
 class ProtNet(nn.Module):
-    def __init__(self, dim=64, heads=4, t_depth=4, dim_head=16, num_degrees=3, num_neighbours=10,
-                 c_depth=3, pool_depth=4):
+    def __init__(self, dim=64, heads=4, t_depth=4,
+                 c_depth=3, se3=True):
         super().__init__()
-        self.time_emb = SinusoidalPosEmb(dim // 2)
-        self.se3trans = SE3Transformer(
-            dim=dim,
-            heads=heads,
-            depth=t_depth,
-            dim_head=dim_head,
-            input_degrees=2,
-            num_degrees=num_degrees,
-            output_degrees=num_degrees,
-            # this must be set to true, in which case it will assert that you pass in the adjacency matrix
-            attend_sparse_neighbors=True,
-            # if you set this to 0, it will only consider the connected neighbors as defined by the adjacency matrix.
-            # but if you set a value greater than 0, it will continue to fetch the closest points up to this many,
-            # excluding the ones already specified by the adjacency matrix
-            num_neighbors=num_neighbours,
-            # GLA removed in newer package versions?
-            # # We're interested in a single, global transformation,
-            # # so take a global linear attention
-            # # as otherwise we won't actually get global information flow
-            # # due to the nearest-neighbour restriction present in SE3 transformers,
-            # global_linear_attn_every=1,
-            reversible=True,
-            )
-        self.pooltrans = SE3Transformer(
-            dim=dim,
-            heads=heads,
-            depth=pool_depth,
-            dim_head=dim_head,
-            input_degrees=num_degrees,
-            num_degrees=num_degrees,
-            output_degrees=2,
-            num_neighbors=num_neighbours,
-            norm_gated_scale=True,
-            reversible=True,
-            )
+        time_dim = dim // 4
+        pos_dim = dim // 3
+        ang_dim = dim // 3
+        res_dim = dim - (time_dim + pos_dim + ang_dim)
+        self.se3 = se3
+        self.time_emb = SinusoidalPosEmb(time_dim)
+        self.pos_emb = Siren(3, pos_dim)
+        self.ang_emb = Siren(9, ang_dim)
+        # 1-d conv block, res_count -> dim -> dim -> dim ... dim -> res_dim
+        # intermediate layers (dim -> dim) are residual (linear + SiLU) defined by list comprehension
         self.res_conv = nn.Sequential(
             nn.Conv1d(
                 in_channels=RES_COUNT,
@@ -225,7 +198,7 @@ class ProtNet(nn.Module):
                 kernel_size=(3,),
                 padding=(1,),
                 stride=(1,)
-                ),
+            ),
             nn.SiLU(inplace=True),
             *[ResLayer(
                 nn.Sequential(
@@ -235,81 +208,57 @@ class ProtNet(nn.Module):
                         kernel_size=(3,),
                         padding=(1,),
                         stride=(1,)
-                        ),
+                    ),
                     nn.SiLU(inplace=True),
-                    )
                 )
-                for _ in range(c_depth - 1)
-                ],
             )
-        # We need to generate an equal number of diff_type-0 and diff_type-1 features
-        # So use an explict SE3-invariant linear transform to project up.
-        self.vec_proj = FFSE3(Fiber({"1": 3}),
-                              Fiber({"1": dim}),
-                              gated_scale=True,
-                              )
+                for _ in range(c_depth - 2)
+            ],
+            nn.Conv1d(
+                in_channels=dim,
+                out_channels=res_dim,
+                kernel_size=(3,),
+                padding=(1,),
+                stride=(1,)
+            ),
+        )
+        enc_layer = nn.TransformerEncoderLayer(dim, heads)
+        encoder_norm = nn.LayerNorm(dim, eps=1e-5)
+        self.trans = nn.TransformerEncoder(
+            encoder_layer=enc_layer,
+            num_layers=t_depth,
+            norm=encoder_norm
+        )
 
-        self.downsample = FFSE3(Fiber({str(x): dim for x in range(num_degrees)}),
-                                Fiber({**{"0": dim // 2},
-                                       **{str(x): dim for x in range(1, num_degrees)}
-                                       }),
-                                gated_scale=True,
-                                )
-
-        self.final_se3 = FFSE3(Fiber({"0": dim,
-                                      "1": dim,
-                                      }),
-                               Fiber({"1": 2}),
-                               gated_scale=True,
-                               )
-
-        self.pool = PoolSE3(Fiber({str(k): dim for k in range(num_degrees)}))
+        self.pool = PoolRN(dim)
+        self.last = nn.Sequential(nn.SiLU(),
+                                  nn.Linear(dim, 6),
+                                  )
 
     def forward(self, x: Tuple[Tuple[ProtData, ProtData]], t):
-        device = x[0][0][0].device
-        receptors, ligands = [x for x in zip(*x)]
 
-        r_ang = pad_sequence([r.angles for r in receptors], batch_first=True)
-        r_pos = pad_sequence([r.positions for r in receptors], batch_first=True)
-        r_res = pad_sequence([r.residues for r in receptors], batch_first=True)
-        r_msk = pad_sequence([torch.ones(len(r.angles)) for r in receptors], batch_first=True).to(bool).to(device)
-        r_adj = torch.diag_embed(r_msk[..., :-1], offset=1)
-        r_adj = torch.logical_or(r_adj, r_adj.transpose(-1, -2))
+        ang = pad_sequence([torch.cat((r.angles, l.angles), dim=0) for r, l in x], batch_first=True)
+        ang_flat = ang.flatten(-2, -1)
+        pos = pad_sequence([torch.cat((r.positions, l.positions), dim=0) for r, l in x], batch_first=True)
+        res_embed = pad_sequence([torch.cat((
+            self.res_conv(r.residues[None].transpose(-1, -2)).transpose(-1, -2)[0],
+            self.res_conv(l.residues[None].transpose(-1, -2)).transpose(-1, -2)[0],
+        ), dim=0) for r, l in x], batch_first=True)
+        time_embed = self.time_emb(t)
+        pos_embed = self.pos_emb(pos)
+        ang_embed = self.ang_emb(ang_flat)
+        # If there's no onehot'd residue, then it's a pad value (all 0's).
+        # Need True to mask out
+        msk = pos.any(dim=-1)
+        seq_len = msk.shape[1]
+        time_embed = time_embed.unsqueeze(1).expand(-1, seq_len, -1)
+        t_in = torch.cat((time_embed, res_embed, pos_embed, ang_embed), dim=-1)
+        t_out = self.trans(t_in.transpose(0, 1), src_key_padding_mask=msk.logical_not()).transpose(0, 1)
 
-        r_emb = self.res_conv(r_res.transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-        r_fea = self.vec_proj({"1": r_ang})
-        r_fea["0"] = r_emb
-        r_out = self.se3trans(r_fea, r_pos, r_msk, r_adj, return_pooled=False)
-        r_out["0"] = r_out["0"].unsqueeze(-1)
-
-        r_pool = self.pool(r_out, r_msk)
-
-        l_ang = pad_sequence([l.angles for l in ligands], batch_first=True)
-        l_pos = pad_sequence([l.positions for l in ligands], batch_first=True)
-        l_res = pad_sequence([l.residues for l in ligands], batch_first=True)
-        l_msk = pad_sequence([torch.ones(len(l.angles)) for l in ligands], batch_first=True).to(bool).to(device)
-        l_adj = torch.diag_embed(l_msk[..., :-1], offset=1)
-        l_adj = torch.logical_or(l_adj, l_adj.transpose(-1, -2))
-
-        l_emb = self.res_conv(l_res.transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-        l_fea = self.vec_proj({"1": l_ang})
-        l_fea["0"] = l_emb
-        l_out = self.se3trans(l_fea, l_pos, l_msk, l_adj, return_pooled=False)
-
-        l_out["0"] = l_out["0"].unsqueeze(-1)
-
-        l_pool = self.pool(l_out, l_msk)
-
-        pool = {k: torch.cat((r_pool[k], l_pool[k]), dim=1) for k in r_pool.keys()}
-        pool_ds = self.downsample(pool)
-        pos = torch.stack((masked_mean(r_pos, r_msk, dim=1),
-                           masked_mean(l_pos, l_msk, dim=1)),
-                          dim=1)
-        time_emb = self.time_emb(t)[..., None, :, None].expand_as(pool_ds["0"])
-        pool_ds["0"] = torch.cat((pool_ds["0"], time_emb), dim=-2)
-        p_out = self.pooltrans(pool_ds, pos)
-        p_out["0"] = p_out["0"].unsqueeze(-1)
-        out = self.final_se3(p_out)
-        # shape = [b, (r/l), feat, dim], look at ligand output.
-        aff_out = AffineGrad(rot_g=out["1"][:, 1, 0], shift_g=out["1"][:, 1, 1])
-        return aff_out
+        pool_out = self.pool(t_out)
+        last_out = self.last(pool_out)
+        if self.se3:
+            out = AffineGrad(rot_g=last_out[..., :3], shift_g=last_out[..., 3:])
+        else:
+            out = last_out
+        return out

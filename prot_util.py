@@ -1,10 +1,11 @@
+import os
+from pathlib import Path
+from typing import List, Union
+
 import Bio.PDB as PDB
-import torch
 from torch import nn
 from torch.utils.data import Dataset
-from typing import List, Union
-from pathlib import Path
-import os
+
 from util import *
 
 UNIQUE_RESIDUES = ["ALA",
@@ -47,7 +48,7 @@ def pdb_2_rigid_gas(pdbfile) -> ProtData:
     res_vecs = torch.zeros((len(residues), 3, 3))
     for i, res in enumerate(residues):
         res_one_hot[i, UNIQUE_RESIDUES.index(res.resname)] = 1
-        res_pos[i, :] = torch.from_numpy(res['CA'].coord)
+        res_pos[i, :] = torch.from_numpy(res['CA'].coord) / 40 # Points are spread out, normalise to smaller values
         C_CA = torch.from_numpy(res['C'].coord - res['CA'].coord)
         N_CA = torch.from_numpy(res['N'].coord - res['CA'].coord)
         v1 = C_CA / C_CA.norm()
@@ -102,15 +103,15 @@ class ProtProjection(nn.Module):
     def __init__(self, data: Iterable[Tuple[ProtData, ProtData]], se3=True):
         super().__init__()
         self.data = data
-        self.se3=se3
+        self.se3 = se3
 
     def forward(self, transforms: Union[AffineT, torch.Tensor]):
         if self.se3:
             tfs = transforms
         else:
-            eul = transforms[...,:3]
-            rots = euler_to_rmat(*torch.unbind(eul,-1))
-            tfs = AffineT(rots, transforms[...,3:])
+            eul = transforms[..., :3]
+            rots = euler_to_rmat(*torch.unbind(eul, -1))
+            tfs = AffineT(rots, transforms[..., 3:])
         newligs = [move_prot(t, x[1]) for t, x in zip(tfs, self.data)]
         proj_prots = [(old[0], lig) for old, lig in zip(self.data, newligs)]
         return proj_prots
@@ -139,6 +140,12 @@ if __name__ == "__main__":
         except Exception as e:
             print(protf, e)
 
-    projector = ProtProjection(rec_aug, lig_aug)
-    transf2 = AffineT(rot=torch.linalg.qr(torch.randn(3, 3))[0], shift=torch.randn(3))
+    projector = ProtProjection([(rec_aug, lig_aug)])
+    transf2 = [AffineT(rot=torch.linalg.qr(torch.randn(3, 3))[0], shift=torch.randn(3))]
     nn_in = projector(transf2)
+    dataset = ProtDataset("data/BPTI_dock")
+
+    positions = [torch.cat((receptor.positions, ligand.positions), dim=0) for receptor, ligand in dataset]
+    for i,x in enumerate(positions):
+        print(dataset.prots[i], x.std())
+    print('aaa')
