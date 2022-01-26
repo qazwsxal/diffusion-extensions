@@ -13,3 +13,7 @@ data/
 *.pt
 
 rotations.eps
+
+prot_paths/
+
+prot_paths.zip

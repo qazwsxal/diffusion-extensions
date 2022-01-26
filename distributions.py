@@ -14,7 +14,7 @@ class IsotropicGaussianSO3(Distribution):
         self.eps = eps
         self._mean = mean.to(self.eps)
         self._mean_inv = self._mean.transpose(-1, -2)  # orthonormal so inverse = Transpose
-        pdf_sample_locs = pi * torch.linspace(0, 1.0, 10000) ** 3.0  # Pack more samples near 0
+        pdf_sample_locs = pi * torch.linspace(0, 1.0, 1000) ** 3.0  # Pack more samples near 0
         pdf_sample_locs = pdf_sample_locs.to(self.eps)
         # As we're sampling using axis-angle form
         # and need to account for the change in density
@@ -70,8 +70,8 @@ class IsotropicGaussianSO3(Distribution):
         maxdims = max(len(self.eps.shape), len(t.shape))
         # This is an infinite sum, approximate with 5/eps**2 values
         l_count = round(min((5 / self.eps.min() ** 2).item(), 1e7))
-        if l_count >= 1e4:
-            chunk_size = int(1e4) # Should tune this
+        if l_count >= 1e5:
+            chunk_size = int(1e5) # Should tune this
             print("small eps! Using chunked l calcs", self.eps.min())
             vals = torch.zeros_like(t[None])
             for l_min in range(0, l_count, chunk_size):
