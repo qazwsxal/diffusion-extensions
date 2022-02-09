@@ -35,6 +35,10 @@ class AffineT(object):
         rot = euler_to_rmat(*torch.unbind(euls, dim=-1))
         return cls(rot, shift)
 
+    def detach(self):
+        d_rot = self.rot.detach()
+        d_shift = self.shift.detach()
+        return AffineT(d_rot, d_shift)
 
 class AffineGrad(object):
     def __init__(self, rot_g, shift_g):
@@ -52,13 +56,11 @@ class AffineGrad(object):
 ProtData = namedtuple("ProtData", ['residues', 'positions', 'angles'])
 
 
-@torch.jit.script
 def rmat2six(x: torch.Tensor) -> torch.Tensor:
     # Drop last column
     return torch.flatten(x[..., :2, :], -2, -1)
 
 
-@torch.jit.script
 def six2rmat(x: torch.Tensor) -> torch.Tensor:
     a1 = x[..., :3]
     a2 = x[..., 3:6]
@@ -71,7 +73,6 @@ def six2rmat(x: torch.Tensor) -> torch.Tensor:
     return out
 
 
-@torch.jit.script
 def skew2vec(skew: torch.Tensor) -> torch.Tensor:
     vec = torch.zeros_like(skew[..., 0])
     vec[..., 0] = skew[..., 2, 1]
@@ -80,7 +81,6 @@ def skew2vec(skew: torch.Tensor) -> torch.Tensor:
     return vec
 
 
-@torch.jit.script
 def vec2skew(vec: torch.Tensor) -> torch.Tensor:
     skew = torch.repeat_interleave(torch.zeros_like(vec).unsqueeze(-1), 3, dim=-1)
     skew[..., 2, 1] = vec[..., 0]
@@ -89,7 +89,6 @@ def vec2skew(vec: torch.Tensor) -> torch.Tensor:
     return skew - skew.transpose(-1, -2)
 
 
-@torch.jit.script
 def orthogonalise(mat):
     """Orthogonalise rotation/affine matrices
 
@@ -105,7 +104,6 @@ def orthogonalise(mat):
     return orth_mat
 
 
-@torch.jit.script
 def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
     ''' Calculate the cosine distance between two (batched) rotation matrices
 
@@ -134,7 +132,6 @@ def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
 # More effort to derive sin terms
 # but as we're dealing with small angles a lot,
 # the tradeoff is worth it.
-@torch.jit.script
 def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
     skew_mat = (r_mat - r_mat.transpose(-1, -2))
     sk_vec = skew2vec(skew_mat)
@@ -151,7 +148,6 @@ def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
     return log_r_mat
 
 
-@torch.jit.script
 def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
     '''Generates a rotation matrix (3x3) from axis-angle form
 
@@ -165,7 +161,6 @@ def aa_to_rmat(rot_axis: torch.Tensor, ang: torch.Tensor):
     return orthogonalise(rot_mat)
 
 
-@torch.jit.script
 def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
     '''Calculates axis and angle of rotation from a rotation matrix.
 
@@ -180,7 +175,6 @@ def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
     return axis, angle
 
 
-@torch.jit.script
 def rmat_dist(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     '''Calculates the geodesic distance between two (batched) rotation matrices.
 
@@ -191,7 +185,6 @@ def rmat_dist(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return out  # Frobenius norm
 
 
-@torch.jit.script
 def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     ''' Weighted interpolation between rot_a and rot_b
 
@@ -208,7 +201,6 @@ def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor) -> 
     return rot_a @ rot_c_i
 
 
-@torch.jit.script
 def so3_scale(rmat, scalars):
     '''Scale the magnitude of a rotation matrix,
     e.g. a 45 degree rotation scaled by a factor of 2 gives a 90 degree rotation.
@@ -248,7 +240,6 @@ def se3_scale(transf: AffineT, scalars) -> AffineT:
     return AffineT(rot_scaled, shift_scaled)
 
 
-@torch.jit.script
 def rmat_to_euler(rmat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     sy = torch.sqrt(rmat[..., 0, 0] * rmat[..., 0, 0] + rmat[..., 1, 0] * rmat[..., 1, 0])
     x = torch.atan2(rmat[..., 2, 1], rmat[..., 2, 2])
