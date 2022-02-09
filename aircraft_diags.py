@@ -1,6 +1,5 @@
 import torch
 import matplotlib.pyplot as plt
-from util import rmat_to_aa
 
 eul = torch.load("weights/results_aircraft_eul.pt", map_location=torch.device("cpu"))
 eul_flat = eul.ravel()
