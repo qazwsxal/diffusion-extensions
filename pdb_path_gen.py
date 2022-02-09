@@ -13,16 +13,6 @@ IN_PATH = "data/BPTI_dock"
 OUT_PATH = "prot_paths"
 
 
-def shiftprot(in_struct: PDB.Structure.Structure, tf: AffineT):
-    rot = tf.rot.cpu().numpy()
-    shift = tf.shift.cpu().numpy()
-
-
-    new_tensor = ((atom_tensor - lig_mean) @ rot.T) + shift + lig_mean
-
-    print('aaaa')
-
-
 basepath = Path(IN_PATH)
 prots = list({x[:4] for x in os.listdir(IN_PATH)
               if x[-3:] == "pdb" and ("receptors" in x or "ligand" in x)})
