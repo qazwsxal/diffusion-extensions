@@ -48,7 +48,7 @@ def pdb_2_rigid_gas(pdbfile) -> ProtData:
     res_vecs = torch.zeros((len(residues), 3, 3))
     for i, res in enumerate(residues):
         res_one_hot[i, UNIQUE_RESIDUES.index(res.resname)] = 1
-        res_pos[i, :] = torch.from_numpy(res['CA'].coord) / 40 # Points are spread out, normalise to smaller values
+        res_pos[i, :] = torch.from_numpy(res['CA'].coord) # Points are spread out, normalise to smaller values
         C_CA = torch.from_numpy(res['C'].coord - res['CA'].coord)
         N_CA = torch.from_numpy(res['N'].coord - res['CA'].coord)
         v1 = C_CA / C_CA.norm()
