@@ -103,10 +103,27 @@ class PoolRN(nn.Module):
     def forward(self, x: torch.Tensor, mask=None):
         if mask == None:
             mask = torch.ones((*x.shape[:-1], 1), dtype=torch.bool).to(x.device)
-        weight = (self.pool(x) * mask)
+        weight = (self.pool(x) * mask[..., None])
         w_sum = weight.sum(dim=-2, keepdim=True).clamp(min=1e-6)
         val = self.lin(x)
         out = (val * weight).sum(dim=-2, keepdim=True) / w_sum
+        return out[..., 0, :]
+
+
+class PoolPos(nn.Module):
+    def __init__(self, dim_pool):
+        super().__init__()
+        self.pool = nn.Sequential(
+            nn.Linear(dim_pool, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor, pos, mask=None):
+        if mask == None:
+            mask = torch.ones((*x.shape[:-1], 1), dtype=torch.bool).to(x.device)
+        weight = (self.pool(x) * mask[..., None])
+        w_sum = weight.sum(dim=-2, keepdim=True).clamp(min=1e-6)
+        out = (pos * weight).sum(dim=-2, keepdim=True) / w_sum
         return out[..., 0, :]
 
 
@@ -150,15 +167,31 @@ class FFSE3(nn.Module):
         return outputs
 
 
+class TransformerEnc2(nn.Module):
+    def __init__(self, dim=512, heads=4, layers=4):
+        super().__init__()
+        enc_layer = nn.TransformerEncoderLayer(dim, heads)
+        encoder_norm = nn.LayerNorm(dim, eps=1e-5)
+        self.encoder = nn.TransformerEncoder(enc_layer, layers, norm=encoder_norm)
+
+    def forward(self, x, src_key_padding_mask=None):
+        # Transpose batch and sequence dimension
+        # Because we're using a version of PT that doesn't support
+        # Batch first.
+        encoding = self.encoder(x.transpose(0, 1), src_key_padding_mask=src_key_padding_mask).transpose(0, 1)
+        return encoding  # Drop sequence dimension
+
+
 class PlaneNet(nn.Module):
     def __init__(self, dim=512, heads=4, layers=4):
         super().__init__()
-        d_out = 3
+        dim_out = 3
+
         enc_layer = nn.TransformerEncoderLayer(dim, heads)
+
+        self.encoder = nn.TransformerEncoder(enc_layer, layers)
         self.position_siren = Siren(in_channels=3, out_channels=dim // 2, scale=30)
         self.time_embedding = SinusoidalPosEmb(dim // 2)
-        self.encoder = nn.TransformerEncoder(enc_layer, layers)
-        self.class_token = nn.Parameter(torch.randn(1, 1, dim))
 
         self.out_net = nn.Sequential(PoolRN(dim),
                                      nn.Linear(dim, 3),
@@ -181,13 +214,13 @@ class ProtNet(nn.Module):
     def __init__(self, dim=64, heads=4, t_depth=4,
                  c_depth=3, se3=True):
         super().__init__()
-        time_dim = dim // 4
-        pos_dim = dim // 3
-        ang_dim = dim // 3
-        res_dim = dim - (time_dim + pos_dim + ang_dim)
+        time_dim = dim
+        pos_dim = dim // 2
+        ang_dim = dim // 4
+        res_dim = dim - (pos_dim + ang_dim)
         self.se3 = se3
         self.time_emb = SinusoidalPosEmb(time_dim)
-        self.pos_emb = Siren(3, pos_dim)
+        self.pos_emb = Siren(3, pos_dim, scale=0.1)
         self.ang_emb = Siren(9, ang_dim)
         # 1-d conv block, res_count -> dim -> dim -> dim ... dim -> res_dim
         # intermediate layers (dim -> dim) are residual (linear + SiLU) defined by list comprehension
@@ -222,41 +255,63 @@ class ProtNet(nn.Module):
                 stride=(1,)
             ),
         )
-        enc_layer = nn.TransformerEncoderLayer(dim, heads)
-        encoder_norm = nn.LayerNorm(dim, eps=1e-5)
-        self.trans = nn.TransformerEncoder(
-            encoder_layer=enc_layer,
-            num_layers=t_depth,
-            norm=encoder_norm
-        )
+        self.lig_tf = TransformerEnc2(dim=dim, layers=t_depth, heads=heads)
+        self.lig_emb_pool = PoolRN(dim)
+        self.lig_pos_pool = PoolPos(dim)
+        self.rec_tf = TransformerEnc2(dim=dim, layers=t_depth, heads=heads)
+        self.rec_emb_pool = PoolRN(dim)
+        self.rec_pos_pool = PoolPos(dim)
 
-        self.pool = PoolRN(dim)
-        self.last = nn.Sequential(nn.SiLU(),
+        self.last = nn.Sequential(nn.Sequential(nn.Linear(3 * dim + 6, dim),
+                                                nn.SiLU(inplace=True),
+                                                ),
+                                  *[ResLayer(nn.Sequential(nn.Linear(dim, dim),
+                                                           nn.SiLU(inplace=True),
+                                                           ))
+                                    for _ in range(3)],
                                   nn.Linear(dim, 6),
                                   )
 
     def forward(self, x: Tuple[Tuple[ProtData, ProtData]], t):
-
-        ang = pad_sequence([torch.cat((r.angles, l.angles), dim=0) for r, l in x], batch_first=True)
-        ang_flat = ang.flatten(-2, -1)
-        pos = pad_sequence([torch.cat((r.positions, l.positions), dim=0) for r, l in x], batch_first=True)
-        res_embed = pad_sequence([torch.cat((
-            self.res_conv(r.residues[None].transpose(-1, -2)).transpose(-1, -2)[0],
-            self.res_conv(l.residues[None].transpose(-1, -2)).transpose(-1, -2)[0],
-        ), dim=0) for r, l in x], batch_first=True)
         time_embed = self.time_emb(t)
-        pos_embed = self.pos_emb(pos)
-        ang_embed = self.ang_emb(ang_flat)
+        r_ang = pad_sequence([r.angles for r, _ in x], batch_first=True)
+        r_ang_flat = r_ang.flatten(-2, -1)
+        r_ang_embed = self.ang_emb(r_ang_flat)
+        r_pos = pad_sequence([r.positions for r, _ in x], batch_first=True)
+        r_pos_embed = self.pos_emb(r_pos)
+        r_res_embed = pad_sequence([self.res_conv(r.residues[None].transpose(-1, -2)).transpose(-1, -2)[0]
+                                    for r, _ in x], batch_first=True)
+
         # If there's no onehot'd residue, then it's a pad value (all 0's).
         # Need True to mask out
-        msk = pos.any(dim=-1)
-        seq_len = msk.shape[1]
-        time_embed = time_embed.unsqueeze(1).expand(-1, seq_len, -1)
-        t_in = torch.cat((time_embed, res_embed, pos_embed, ang_embed), dim=-1)
-        t_out = self.trans(t_in.transpose(0, 1), src_key_padding_mask=msk.logical_not()).transpose(0, 1)
+        r_msk = r_pos.any(dim=-1)
+        r_seq_len = r_msk.shape[1]
+        r_t_in = torch.cat((r_res_embed, r_pos_embed, r_ang_embed), dim=-1)
+        r_t_out = self.rec_tf(r_t_in, src_key_padding_mask=r_msk.logical_not())
 
-        pool_out = self.pool(t_out)
-        last_out = self.last(pool_out)
+        r_pool_out = self.rec_emb_pool(r_t_out, r_msk)
+        r_pos_out = self.rec_pos_pool(r_t_out, r_pos, r_msk)
+
+        l_ang = pad_sequence([l.angles for _, l in x], batch_first=True)
+        l_ang_flat = l_ang.flatten(-2, -1)
+        l_ang_embed = self.ang_emb(l_ang_flat)
+        l_pos = pad_sequence([l.positions for _, l in x], batch_first=True)
+        l_pos_embed = self.pos_emb(l_pos)
+        l_res_embed = pad_sequence([self.res_conv(l.residues[None].transpose(-1, -2)).transpose(-1, -2)[0]
+                                    for _, l in x], batch_first=True)
+
+        # If there's no onehot'd residue, then it's a pad value (all 0's).
+        # Need True to mask out
+        l_msk = l_pos.any(dim=-1)
+        l_seq_len = l_msk.shape[1]
+        l_t_in = torch.cat((l_res_embed, l_pos_embed, l_ang_embed), dim=-1)
+        l_t_out = self.rec_tf(l_t_in, src_key_padding_mask=l_msk.logical_not())
+
+        l_pool_out = self.lig_emb_pool(l_t_out, l_msk)
+        l_pos_out = self.lig_pos_pool(l_t_out, l_pos, l_msk)
+
+        pool = torch.cat((time_embed, r_pool_out, r_pos_out, l_pool_out, l_pos_out), dim=-1)
+        last_out = self.last(pool)
         if self.se3:
             out = AffineGrad(rot_g=last_out[..., :3], shift_g=last_out[..., 3:])
         else:

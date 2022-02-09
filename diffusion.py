@@ -429,9 +429,10 @@ class ProjectedSO3Diffusion(SO3Diffusion):
 
 
 class SE3Diffusion(GaussianDiffusion):
-    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None, shift_scale=75.0):
         super().__init__(denoise_fn, image_size=None, timesteps=timesteps, loss_type=loss_type, betas=betas)
         self.register_buffer("identity", torch.eye(3))
+        self.shift_scale=shift_scale
 
     def q_mean_variance(self, x_start, t):
         mean = se3_scale(x_start, extract(self.sqrt_alphas_cumprod, t, x_start.shape))
@@ -472,12 +473,12 @@ class SE3Diffusion(GaussianDiffusion):
         b, *_, device = *x.shape, x.device
         model_mean, _, model_log_variance = self.p_mean_variance(x=x, t=t, clip_denoised=clip_denoised)
 
-        if (t == 0.0).all():
+        if (t == 0).all():
             return model_mean
         else:
             # no noise when t == 0
             model_stdev = (0.5 * model_log_variance).exp()
-            sample = IGSO3xR3(eps=model_stdev[0], mean=model_mean).sample([b])
+            sample = IGSO3xR3(eps=model_stdev[0], mean=model_mean, shift_scale=self.shift_scale).sample()
             return sample
 
     @torch.no_grad()
@@ -494,7 +495,7 @@ class SE3Diffusion(GaussianDiffusion):
     def q_sample(self, x_start, t, noise=None):
         if noise is None:
             eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
-            noise = IGSO3xR3(eps).sample()
+            noise = IGSO3xR3(eps, shift_scale=self.shift_scale).sample()
 
         scale = extract(self.sqrt_alphas_cumprod, t, t.shape)
         x_blend = se3_scale(x_start, scale)
@@ -502,12 +503,12 @@ class SE3Diffusion(GaussianDiffusion):
 
     def p_losses(self, x_start, t, noise=None):
         eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
-        noise = IGSO3xR3(eps).sample()
+        noise = IGSO3xR3(eps, shift_scale=self.shift_scale).sample()
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         x_recon = self.denoise_fn(x_noisy, t)
 
+        descaled_shift = (noise.shift) * (1 / (eps*self.shift_scale))[..., None]
         descaled_rot = skew2vec(log_rmat(noise.rot)) * (1 / eps)[..., None]
-        descaled_shift = noise.shift * (1 / eps)[..., None]
         if self.loss_type == "grad_mse":
             loss = F.mse_loss(x_recon.shift, descaled_shift) + F.mse_loss(x_recon.rot, descaled_rot)
         else:
@@ -521,9 +522,10 @@ class SE3Diffusion(GaussianDiffusion):
 
 
 class ProjectedSE3Diffusion(SE3Diffusion):
-    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None, shift_scale=75.0):
         super().__init__(denoise_fn, timesteps=timesteps, loss_type=loss_type, betas=betas)
         self.register_buffer("identity", torch.eye(3))
+        self.shift_scale=shift_scale
 
     def p_mean_variance(self, x, t, clip_denoised: bool):
         proj_x = self.projection(x)
@@ -548,15 +550,77 @@ class ProjectedSE3Diffusion(SE3Diffusion):
 
     def p_losses(self, x_start, t, noise=None):
         eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
-        noise = IGSO3xR3(eps).sample()
+        noise = IGSO3xR3(eps, shift_scale=self.shift_scale).sample()
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        descaled_shift = (noise.shift) * (1 / (eps*self.shift_scale))[..., None]
+        descaled_rot = skew2vec(log_rmat(noise.rot)) * (1 / (eps))[..., None]
         proj_x_noisy = self.projection(x_noisy)
         x_recon = self.denoise_fn(proj_x_noisy, t)
-        descaled_shift = (noise.shift) * (1 / eps)[..., None]
-        descaled_rot = skew2vec(log_rmat(noise.rot)) * (1 / eps)[..., None]
         loss_shift = F.mse_loss(x_recon.shift_g, descaled_shift)
         loss_rot = F.mse_loss(x_recon.rot_g, descaled_rot)
         loss = loss_shift + loss_rot
+        if self.loss_type != 'grad_mse':
+            RuntimeError(f"Unexpected loss_type: {self.loss_type}")
+
+        return loss
+
+    def forward(self, x, projection, *args, **kwargs):
+        self.projection = projection
+        b = len(x)
+        device = x.device
+        t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        return self.p_losses(x, t, *args, **kwargs)
+
+class ProjectedEulerDiffusion(ProjectedGaussianDiffusion):
+    def __init__(self, denoise_fn, timesteps=1000, loss_type='grad_mse', betas=None, rot_scale=3.0, shift_scale=75.0):
+        super().__init__(denoise_fn, timesteps=timesteps, loss_type=loss_type, betas=betas)
+        self.register_buffer("identity", torch.eye(3))
+        self.rot_scale= rot_scale
+        self.shift_scale=shift_scale
+
+    def p_mean_variance(self, x, t, clip_denoised: bool):
+        proj_x = self.projection(x)
+        predict = self.denoise_fn(proj_x, t)
+        x_recon = self.predict_start_from_noise(x, t=t, noise=predict)
+
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
+        return model_mean, posterior_variance, posterior_log_variance
+
+    @torch.no_grad()
+    def p_sample(self, x, t, clip_denoised=False, repeat_noise=False):
+        b, *_, device = *x.shape, x.device
+        model_mean, _, model_log_variance = self.p_mean_variance(x=x, t=t, clip_denoised=clip_denoised)
+        noise = noise_like(x.shape, device, repeat_noise)
+        # don't multiply by std here, we do it in the return statement
+        noise[...,:3] *= self.rot_scale
+        noise[...,3:] *= self.shift_scale
+        # no noise when t == 0
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
+        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+
+    @torch.no_grad()
+    def p_sample_loop(self, shape, projection):
+        self.projection = projection
+        device = self.betas.device
+        b = shape[0]
+        # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
+        x = torch.randn(b, 6)
+        x[...,:3] *= self.rot_scale
+        x[...,3:] *= self.shift_scale
+        for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+            x = self.p_sample(x, torch.full((b,), i, device=device, dtype=torch.long))
+        return x
+
+    def p_losses(self, x_start, t, noise=None):
+        eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
+        descaled_noise = torch.randn_like(x_start)
+        noise = torch.clone(descaled_noise)
+        noise[...,:3] *= eps[...,None]*self.rot_scale
+        noise[...,3:] *= eps[...,None]*self.shift_scale
+        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        proj_x_noisy = self.projection(x_noisy)
+        x_recon = self.denoise_fn(proj_x_noisy, t)
+        loss = F.mse_loss(x_recon, descaled_noise)
         if self.loss_type != 'grad_mse':
             RuntimeError(f"Unexpected loss_type: {self.loss_type}")
 

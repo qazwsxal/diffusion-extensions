@@ -69,7 +69,7 @@ class IsotropicGaussianSO3(Distribution):
     def _eps_ft(self, t: torch.Tensor) -> torch.Tensor:
         maxdims = max(len(self.eps.shape), len(t.shape))
         # This is an infinite sum, approximate with 5/eps**2 values
-        l_count = round(min((5 / self.eps.min() ** 2).item(), 1e7))
+        l_count = round(min(max(1e3,(5 / self.eps.min() ** 2).item()), 1e7))
         if l_count >= 1e5:
             chunk_size = int(1e5) # Should tune this
             print("small eps! Using chunked l calcs", self.eps.min())
@@ -99,15 +99,15 @@ class IsotropicGaussianSO3(Distribution):
 class IGSO3xR3(Distribution):
     arg_constraints = {'eps': constraints.positive}
 
-    def __init__(self, eps: torch.Tensor, mean: AffineT = None):
+    def __init__(self, eps: torch.Tensor, mean: AffineT = None, shift_scale=1.0):
         self.eps = eps
         if mean == None:
             rot = torch.eye(3).unsqueeze(0)
             shift = torch.zeros(*eps.shape, 3).to(eps)#
             mean = AffineT(shift=shift, rot=rot)
         self._mean = mean.to(eps)
-        self.igso3 = IsotropicGaussianSO3(eps=eps, mean=self._mean.rot)
-        self.r3 = Normal(loc=self._mean.shift, scale=eps[...,None])
+        self.igso3 = IsotropicGaussianSO3(eps=eps*rot_scale, mean=self._mean.rot)
+        self.r3 = Normal(loc=self._mean.shift, scale=eps[...,None]*shift_scale)
         super().__init__()
 
 

@@ -3,22 +3,28 @@ from torch.utils.data import DataLoader
 from models import ProtNet
 from prot_util import *
 from util import identity, to_device, init_from_dict
-from diffusion import ProjectedSE3Diffusion, ProjectedGaussianDiffusion
+from diffusion import ProjectedSE3Diffusion, ProjectedEulerDiffusion
 from itertools import count
 from tqdm import tqdm, trange
-
+import pickle
 
 AUGMENT = True
-SAMPLES = 32
+SAMPLES = 4
 
 if __name__ == "__main__":
-    torch.multiprocessing.set_start_method("forkserver")
+    import os
+    # Windows doesn't support process forking
+    if  os.name != 'nt':
+        torch.multiprocessing.set_start_method("forkserver")
     import wandb
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--batch", type=int, default=1, help="batch size"
+        "--batch",
+        type=int,
+        default=2,
+        help="batch",
         )
     parser.add_argument(
         "--lr",
@@ -29,13 +35,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dim",
         type=int,
-        default=64,
+        default=1024,
         help="transformer dimension",
         )
     parser.add_argument(
         "--heads",
         type=int,
-        default=2,
+        default=8,
         help="number of self-attention heads per layer",
         )
     parser.add_argument(
@@ -47,13 +53,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--t_depth",
         type=int,
-        default=4,
+        default=12,
         help="number of transformer layers",
         )
     parser.add_argument(
         "--c_depth",
         type=int,
-        default=3,
+        default=8,
         help="number of residue convolutional layers",
         )
     parser.add_argument(
@@ -68,9 +74,11 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     dataset = ProtDataset("data/BPTI_dock")
-    dl = DataLoader(dataset, batch_size=config["batch"], shuffle=True,
-                    num_workers=4, pin_memory=True,
-                    collate_fn=identity, persistent_workers=True)
+    dl = DataLoader(dataset, batch_size=args.batch, shuffle=True,
+                    num_workers=0, pin_memory=True,
+                    collate_fn=identity,
+                    # persistent_workers=True,
+                    )
 
     net, = init_from_dict(config, ProtNet)
     net.to(device)
@@ -81,15 +89,15 @@ if __name__ == "__main__":
 
     if config['se3']:
         process = ProjectedSE3Diffusion(net).to(device)
-        true_rot = torch.eye(3).unsqueeze(0).expand(config["batch"], -1, -1).to(device)
-        true_shift = torch.zeros(config["batch"], 3).to(device)
+        true_rot = torch.eye(3).unsqueeze(0).expand(args.batch, -1, -1).to(device)
+        true_shift = torch.zeros(args.batch, 3).to(device)
         true_pos = AffineT(shift=true_shift, rot=true_rot)
     else:
-        process = ProjectedGaussianDiffusion(net).to(device)
-        true_pos = torch.zeros(config["batch"], 6).to(device)
+        process = ProjectedEulerDiffusion(net).to(device)
+        true_pos = torch.zeros(args.batch, 6).to(device)
 
 
-
+    results = []
     for i, data in enumerate(tqdm(dl, desc='batch')):
         data = to_device(device, *data)
         # Random transform.
@@ -104,7 +112,7 @@ if __name__ == "__main__":
 
         process.projection = projection
 
-        results = torch.zeros((args.batch, SAMPLES, 3, 3)).to(device)
+        samples = []
 
         for samp in trange(SAMPLES, leave=False, desc="sample number"):
             with torch.no_grad():
@@ -123,13 +131,17 @@ if __name__ == "__main__":
                               total=process.num_timesteps,
                               leave=False,
                               ):
-                    transform = process.p_sample(R, torch.full((args.batch,), i, device=device,
+                    transform = process.p_sample(transform, torch.full((args.batch,), i, device=device,
                                                              dtype=torch.long)).detach()
-            if not config['so3']:
-                results[:, samp] = euler_to_rmat(*torch.unbind(R,-1))
+            # TODO make this SE3 compatible
+            if not config['se3']:
+
+                eul = transform[..., :3]
+                rots = euler_to_rmat(*torch.unbind(eul,-1))
+                shift = transform[..., 3:]
+                aff_t = AffineT(rots, shift).to('cpu')
             else:
-                results[:, samp] = R
-        loss = process(true_pos[:len(data)], projection)
-        loss.backward()
-        wandb.log({"loss": loss.item()})
-        print(i)
+                aff_t = transform.to('cpu')
+            samples.append(aff_t)
+        results.append(samples)
+pickle.dump(results, open(f'prot_samples_{diff_type}.pkl', 'wb'))

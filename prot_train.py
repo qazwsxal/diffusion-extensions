@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader
 from models import ProtNet
 from prot_util import *
 from util import identity, to_device, init_from_dict
-from diffusion import ProjectedSE3Diffusion, ProjectedGaussianDiffusion
+from diffusion import ProjectedSE3Diffusion, ProjectedEulerDiffusion
 from itertools import count
 
 
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         true_shift = torch.zeros(config["batch"], 3).to(device)
         true_pos = AffineT(shift=true_shift, rot=true_rot)
     else:
-        diff_model = ProjectedGaussianDiffusion(net).to(device)
+        diff_model = ProjectedEulerDiffusion(net).to(device)
         true_pos = torch.zeros(config["batch"], 6).to(device)
 
 
@@ -108,3 +108,5 @@ if __name__ == "__main__":
         optim.zero_grad()
         if epoch % 10 == 0:
             torch.save(net.state_dict(), f"weights/weights_protein_{diff_type}.pt")
+        if epoch==1000:
+            break
