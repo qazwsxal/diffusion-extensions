@@ -1,6 +1,7 @@
 import inspect
 from collections import namedtuple
 from typing import Tuple, Iterable
+from math import sqrt, log, exp
 
 import torch
 
@@ -39,6 +40,7 @@ class AffineT(object):
         d_rot = self.rot.detach()
         d_shift = self.shift.detach()
         return AffineT(d_rot, d_shift)
+
 
 class AffineGrad(object):
     def __init__(self, rot_g, shift_g):
@@ -122,6 +124,24 @@ def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def rmat_cosine_kernel(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
+    ''' Calculate the cosine kernel between two (batched) rotation matrices
+
+    '''
+    # rotation matrices have A^-1 = A_transpose
+    # multiplying the inverse of m2 by m1 gives us a combined transform
+    # corresponding to roting by m1 and then back by the *opposite* of m2.
+    # if m1 == m2, m_comb = identity
+    m_comb = m2.transpose(-1, -2) @ m1
+    # Batch trace calculation
+    tra = torch.einsum('...ii', m_comb)
+    # The trace of a rotation matrix = 1+2*cos(a)
+    # where a is the angle in the axis-angle representation
+    # Cosine dist is defined as 1 - cos(a)
+    out = (tra - 1) / 2
+    return out
+
+
 # See paper
 # Exponentials of skew-symmetric matrices and logarithms of orthogonal matrices
 # https://doi.org/10.1016/j.cam.2009.11.032
@@ -173,6 +193,78 @@ def rmat_to_aa(r_mat) -> Tuple[torch.Tensor, torch.Tensor]:
     angle = skew_vec.norm(p=2, dim=-1, keepdim=True)
     axis = skew_vec / angle
     return axis, angle
+
+
+def quat_to_rmat(quaternions: torch.Tensor) -> torch.Tensor:
+    """
+    Calculates rotation matrices from given quaternions
+
+    returns rotation matrices shape (..., 3, 3).
+
+    `quaternions`: quaternions with real part first, shape (..., 4).
+
+    """
+    r, i, j, k = torch.unbind(quaternions, -1)
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+
+    o = torch.stack(
+        (
+            # row 0
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * k + j * r),
+            # row 1
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (j * k - i * r),
+            # row 2
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+            1 - two_s * (i * i + j * j),
+        ),
+        -1,
+    )
+    # reshape to batches x 3 x 3
+    return o.reshape(quaternions.shape[:-1] + (3, 3))
+
+
+def MMD(X: torch.Tensor, Y: torch.Tensor, kernel):
+    '''
+    Calculate maximum mean descrepancy between two sets of tensors using a given kernel
+    '''
+    l_X = len(X)
+    l_Y = len(Y)
+    X_ker_mean = (1 / l_X ** 2) * kernel(X.unsqueeze(0), X.unsqueeze(1)).sum(dim=(0, 1))
+    Y_ker_mean = (1 / l_Y ** 2) * kernel(Y.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+    outer_mean = (2 / (l_X * l_Y)) * kernel(X.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+
+    return X_ker_mean + Y_ker_mean - outer_mean
+
+
+def Ker_2samp_test(X, Y, kernel, alpha=0.05, max_ker=1):
+    '''Kernel two-sample test
+
+    '''
+    m = len(X)
+    n = len(Y)
+    assert m == n, "Requires equal amount of samples from X and Y"
+
+    mmd = MMD(X,Y,kernel)
+    test_val = (2*max_ker/m) ** 0.5 * (1 + (2*log(1/alpha))**0.5)
+    return mmd.item() < test_val
+
+def Ker_2samp_log_prob(X, Y, kernel, max_ker=1):
+    '''Kernel two-sample test
+
+        returns the log_probability of a type I error
+        i.e. The log-probability of the
+    '''
+    m = len(X)
+    n = len(Y)
+    assert m == n, "Requires equal amount of samples from X and Y"
+
+    mmd = MMD(X,Y,kernel).item()
+    return -((((mmd/((2*max_ker/m) ** 0.5))-1)**2)/2)
 
 
 def rmat_dist(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
