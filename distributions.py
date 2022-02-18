@@ -1,5 +1,6 @@
 from math import pi
 
+import torch
 from torch.distributions import Distribution, constraints, Normal, MultivariateNormal
 
 from util import *
@@ -144,34 +145,56 @@ if __name__ == "__main__":
 
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     # Test bingham distribution and MMD numbers
-    cov1 = torch.diag(torch.tensor([1.0, 1, 125, 125], device=device))
-    cov2 = torch.diag(torch.tensor([1.0, 125, 1, 1], device=device))
+    # Small, uncorrelated rotations
+    # Small, uncorrelated rotations
+    cov1 = torch.diag(torch.tensor([1000.0, 0.1, 0.1, 0.1], device=device))
+    # Small, similar-axis rotations, ijk parts need to be correlated
+    cov2 = torch.tensor([
+        [1e05, 0.00, 0.00, 0.00],
+        [0.00, 1.00, 0.99, 0.99],
+        [0.00, 0.99, 1.00, 0.99],
+        [0.00, 0.99, 0.99, 1.00],
+    ], device=device)
+    #
+    # Big, similar-axis rotations, ijk parts need to be correlated
+    cov3 = torch.tensor([
+        [1.00, 0.00, 0.00, 0.00],
+        [0.00, 1.00, 0.90, 0.90],
+        [0.00, 0.90, 1.00, 0.90],
+        [0.00, 0.90, 0.90, 1.00],
+    ], device=device)
+    #
+
+
     bing1 = Bingham(loc=torch.zeros(4, device=device), covariance_matrix=cov1)
     bing2 = Bingham(loc=torch.zeros(4, device=device), covariance_matrix=cov2)
 
-    b1samp_1 = bing1.sample((1_000,))
-    b1samp_2 = bing1.sample((1_000,))
-    b2samp_1 = bing2.sample((1_000,))
+    b1samp_1 = bing1.sample((100_000,))
+    b1samp_2 = bing1.sample((100_000,))
+    b2samp_1 = bing2.sample((100_000,))
     # Convert to rmat
     rb1samp_1 = quat_to_rmat(b1samp_1)
     rb1samp_2 = quat_to_rmat(b1samp_2)
     rb2samp_1 = quat_to_rmat(b2samp_1)
 
-    same_test = Ker_2samp_log_prob(rb1samp_1, rb1samp_2, rmat_cosine_kernel)
-    diff_test = Ker_2samp_log_prob(rb2samp_1, rb1samp_1, rmat_cosine_kernel)
-    print("MMD self test:", same_test)
-    print("MMD diff test:", diff_test)
-
     for samples in (rb1samp_1, rb2samp_1):
         fig = plt.figure()
         ax = fig.add_subplot(projection='3d')
-        ax.scatter(*samples[:, 0, :].T.cpu())
-        ax.scatter(*samples[:, 1, :].T.cpu())
-        ax.scatter(*samples[:, 2, :].T.cpu())
+        ax.scatter(*samples[:1000, 0, :].T.cpu())
+        ax.scatter(*samples[:1000, 1, :].T.cpu())
+        ax.scatter(*samples[:1000, 2, :].T.cpu())
         ax.set_xlim3d(-1, 1)
         ax.set_ylim3d(-1, 1)
         ax.set_zlim3d(-1, 1)
-        plt.show()
+    plt.show()
+
+    with torch.no_grad():
+        same_test = Ker_2samp_log_prob(rb1samp_1, rb1samp_2, rmat_gaussian_kernel, chunksize=4000)
+        diff_test = Ker_2samp_log_prob(rb2samp_1, rb1samp_1, rmat_gaussian_kernel, chunksize=4000)
+    print("MMD same test:", (same_test))
+    print("MMD diff test:", (diff_test))
+
+
 
     axis = torch.randn((3,))
     axis = (axis / axis.norm(dim=-1, p=2, keepdim=True)).repeat(100, 1)

@@ -2,6 +2,7 @@ import inspect
 from collections import namedtuple
 from typing import Tuple, Iterable
 from math import sqrt, log, exp
+from itertools import product
 
 import torch
 
@@ -124,6 +125,14 @@ def rmat_cosine_dist(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def rmat_gaussian_kernel(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
+    ''' Calculate the gaussian kernel between two (batched) rotation matrices
+
+    '''
+    dist = rmat_dist(m1,m2)
+
+    return torch.exp(-dist)
+
 def rmat_cosine_kernel(m1: torch.Tensor, m2: torch.Tensor) -> torch.Tensor:
     ''' Calculate the cosine kernel between two (batched) rotation matrices
 
@@ -227,21 +236,42 @@ def quat_to_rmat(quaternions: torch.Tensor) -> torch.Tensor:
     # reshape to batches x 3 x 3
     return o.reshape(quaternions.shape[:-1] + (3, 3))
 
-
-def MMD(X: torch.Tensor, Y: torch.Tensor, kernel):
+def MMD(X: torch.Tensor, Y: torch.Tensor, kernel, chunksize=None):
     '''
     Calculate maximum mean descrepancy between two sets of tensors using a given kernel
     '''
     l_X = len(X)
     l_Y = len(Y)
-    X_ker_mean = (1 / l_X ** 2) * kernel(X.unsqueeze(0), X.unsqueeze(1)).sum(dim=(0, 1))
-    Y_ker_mean = (1 / l_Y ** 2) * kernel(Y.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
-    outer_mean = (2 / (l_X * l_Y)) * kernel(X.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+    maxlen = max(l_X, l_Y)
+    # As this involves an outer product, we can end up with matrices too big to fit in ram
+    if chunksize is None or chunksize >= maxlen:
+        X_sum = 1 * kernel(X.unsqueeze(0), X.unsqueeze(1)).sum(dim=(0, 1))
+        Y_sum = 1 * kernel(Y.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+        XY_sum = 2 * kernel(X.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+    else:
+        # If chunksize is set, split X and Y arrays into manageable lengths,
+        splits = list(range(chunksize, maxlen, chunksize))
+        X_split = torch.tensor_split(X, splits)
+        Y_split = torch.tensor_split(Y, splits)
+        # Take outer product kernel function thing and sum each chunk, then sum over them.
+        X_chunk_sums = [kernel(x1.unsqueeze(0), x2.unsqueeze(1)).sum(dim=(0, 1)) for x1, x2 in product(X_split, X_split)]
+        X_sum = sum(X_chunk_sums)
+
+        Y_chunk_sums = [kernel(y1.unsqueeze(0), y2.unsqueeze(1)).sum(dim=(0, 1)) for y1, y2 in product(Y_split, Y_split)]
+        Y_sum = sum(Y_chunk_sums)
+
+        XY_chunk_sums = [kernel(x.unsqueeze(0), y.unsqueeze(1)).sum(dim=(0, 1)) for x, y in product(X_split, Y_split)]
+        XY_sum = sum(XY_chunk_sums)
+
+    X_ker_mean = (1 / l_X ** 2) * X_sum
+    Y_ker_mean = (1 / l_Y ** 2) * Y_sum
+    outer_mean = (2 / (l_X * l_Y)) * XY_sum
 
     return X_ker_mean + Y_ker_mean - outer_mean
 
 
-def Ker_2samp_test(X, Y, kernel, alpha=0.05, max_ker=1):
+
+def Ker_2samp_test(X, Y, kernel, alpha=0.05, max_ker=1, chunksize=None):
     '''Kernel two-sample test
 
     '''
@@ -249,21 +279,21 @@ def Ker_2samp_test(X, Y, kernel, alpha=0.05, max_ker=1):
     n = len(Y)
     assert m == n, "Requires equal amount of samples from X and Y"
 
-    mmd = MMD(X,Y,kernel)
+    mmd = MMD(X,Y,kernel, chunksize=chunksize).item()
     test_val = (2*max_ker/m) ** 0.5 * (1 + (2*log(1/alpha))**0.5)
-    return mmd.item() < test_val
+    return mmd < test_val
 
-def Ker_2samp_log_prob(X, Y, kernel, max_ker=1):
+def Ker_2samp_log_prob(X, Y, kernel, max_ker=1, chunksize=None):
     '''Kernel two-sample test
 
         returns the log_probability of a type I error
-        i.e. The log-probability of the
+        i.e. The log of the p value
     '''
     m = len(X)
     n = len(Y)
     assert m == n, "Requires equal amount of samples from X and Y"
 
-    mmd = MMD(X,Y,kernel).item()
+    mmd = MMD(X,Y,kernel, chunksize=chunksize).item()
     return -((((mmd/((2*max_ker/m) ** 0.5))-1)**2)/2)
 
 
