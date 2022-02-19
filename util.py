@@ -168,12 +168,27 @@ def log_rmat(r_mat: torch.Tensor) -> torch.Tensor:
     c_angle = (torch.einsum('...ii', r_mat) - 1) / 2
     angle = torch.atan2(s_angle, c_angle)
     scale = (angle / (2 * s_angle))
-    scale[angle == 0.0] = 0.0
     # if s_angle = 0, i.e. rotation by 0 or pi (180), we get NaNs
     # by definition, scale values are 0 if rotating by 0.
-    # This also breaks down if rotating by pi, but idk how to fix that.
+    # This also breaks down if rotating by pi, fix further down
+    scale[angle == 0.0] = 0.0
     log_r_mat = scale[..., None, None] * skew_mat
 
+    # Check for NaNs caused by 180deg rotations.
+    nanlocs = log_r_mat[...,0,0].isnan()
+    nanmats = r_mat[nanlocs]
+    # We need to use an alternative way of finding the logarithm for nanmats,
+    # Use eigendecomposition to discover axis of rotation.
+    # By definition, these are symmetric, so use eigh.
+    # NOTE: linalg.eig() isn't in torch 1.8,
+    #       and torch.eig() doesn't do batched matrices
+    eigval, eigvec = torch.linalg.eigh(nanmats)
+    # Final eigenvalue == 1, might be slightly off because floats, but other two are -ve.
+    # this *should* just be the last column if the docs for eigh are true.
+    nan_axes = eigvec[...,-1,:]
+    nan_angle = angle[nanlocs]
+    nan_skew = vec2skew(nan_angle[...,None] * nan_axes)
+    log_r_mat[nanlocs] = nan_skew
     return log_r_mat
 
 
