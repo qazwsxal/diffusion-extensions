@@ -330,7 +330,7 @@ class SO3Diffusion(GaussianDiffusion):
         device = self.betas.device
         b = shape[0]
         # Initial Haar-Uniform random rotations from QR decomp of normal IID matrix
-        x, _ = torch.qr(torch.randn((b, 3, 3)))
+        x = IsotropicGaussianSO3(eps=torch.ones([], device=device)).sample(shape)
 
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
             x = self.p_sample(x, torch.full((b,), i, device=device, dtype=torch.long))
@@ -347,7 +347,8 @@ class SO3Diffusion(GaussianDiffusion):
 
     def p_losses(self, x_start, t, noise=None):
         eps = extract(self.sqrt_one_minus_alphas_cumprod, t, t.shape)
-        noise = IsotropicGaussianSO3(eps).sample()
+        noisedist = IsotropicGaussianSO3(eps)
+        noise = noisedist.sample()
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         x_recon = self.denoise_fn(x_noisy, t)
 
