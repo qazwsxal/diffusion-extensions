@@ -260,9 +260,9 @@ def MMD(X: torch.Tensor, Y: torch.Tensor, kernel, chunksize=None):
     maxlen = max(l_X, l_Y)
     # As this involves an outer product, we can end up with matrices too big to fit in ram
     if chunksize is None or chunksize >= maxlen:
-        X_sum = 1 * kernel(X.unsqueeze(0), X.unsqueeze(1)).sum(dim=(0, 1))
-        Y_sum = 1 * kernel(Y.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
-        XY_sum = 2 * kernel(X.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+        X_sum = kernel(X.unsqueeze(0), X.unsqueeze(1)).sum(dim=(0, 1))
+        Y_sum = kernel(Y.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
+        XY_sum = kernel(X.unsqueeze(0), Y.unsqueeze(1)).sum(dim=(0, 1))
     else:
         # If chunksize is set, split X and Y arrays into manageable lengths,
         splits = list(range(chunksize, maxlen, chunksize))
@@ -278,8 +278,8 @@ def MMD(X: torch.Tensor, Y: torch.Tensor, kernel, chunksize=None):
         XY_chunk_sums = [kernel(x.unsqueeze(0), y.unsqueeze(1)).sum(dim=(0, 1)) for x, y in product(X_split, Y_split)]
         XY_sum = sum(XY_chunk_sums)
 
-    X_ker_mean = (1 / l_X ** 2) * X_sum
-    Y_ker_mean = (1 / l_Y ** 2) * Y_sum
+    X_ker_mean = (1 / (l_X ** 2)) * X_sum
+    Y_ker_mean = (1 / (l_Y ** 2)) * Y_sum
     outer_mean = (2 / (l_X * l_Y)) * XY_sum
 
     return X_ker_mean + Y_ker_mean - outer_mean
