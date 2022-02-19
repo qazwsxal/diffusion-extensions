@@ -13,7 +13,7 @@ class IsotropicGaussianSO3(Distribution):
         self._mean = mean.to(self.eps)
         self._mean_inv = self._mean.transpose(-1, -2)  # orthonormal so inverse = Transpose
         pdf_sample_locs = pi * torch.linspace(0, 1.0, 1000) ** 3.0  # Pack more samples near 0
-        pdf_sample_locs = pdf_sample_locs.to(self.eps)
+        pdf_sample_locs = pdf_sample_locs.to(self.eps).unsqueeze(-1)
         # As we're sampling using axis-angle form
         # and need to account for the change in density
         # Scale by 1-cos(t)/pi for sampling
@@ -22,27 +22,30 @@ class IsotropicGaussianSO3(Distribution):
         # Set to 0.0, otherwise there's a divide by 0 here
         pdf_sample_vals[(pdf_sample_locs == 0).expand_as(pdf_sample_vals)] = 0.0
 
-        # Trapezoidal intergration
-        pdf_val_sums = pdf_sample_vals[..., :-1] + pdf_sample_vals[..., 1:]
+        # Trapezoidal integration
+        pdf_val_sums = pdf_sample_vals[:-1, ...] + pdf_sample_vals[1:, ...]
         pdf_loc_diffs = torch.diff(pdf_sample_locs, dim=0)
-        self.trap = (pdf_loc_diffs * pdf_val_sums / 2).cumsum(dim=-1)
+        self.trap = (pdf_loc_diffs * pdf_val_sums / 2).cumsum(dim=0)
+        self.trap = self.trap/self.trap[-1,None]
         self.trap_loc = pdf_sample_locs[1:]
         super().__init__()
 
     def sample(self, sample_shape=torch.Size()):
         # Consider axis-angle form.
-        axes = torch.randn((*sample_shape, *self.mean.shape[:-2], 3)).to(self.eps)
+        axes = torch.randn((*sample_shape, *self.eps.shape, 3)).to(self.eps)
         axes = axes / axes.norm(dim=-1, keepdim=True)
         # Inverse transform sampling based on numerical approximation of CDF
-        unif = torch.rand((*sample_shape, *self.mean.shape[:-2]), device=self.trap.device)
-        idx_1 = (self.trap < unif[..., None]).sum(dim=-1)
-        idx_0 = idx_1 - 1
+        unif = torch.rand((*sample_shape, *self.eps.shape), device=self.trap.device)
+        idx_1 = (self.trap <= unif[None, ...]).sum(dim=0)
+        idx_0 = torch.clamp(idx_1 - 1,min=0)
 
-        trap_start = self.trap[range(self.trap.shape[0]), idx_0]
-        trap_end = self.trap[range(self.trap.shape[0]), idx_1]
-        weight = ((unif - trap_start) / (trap_end - trap_start))
-        angle_start = self.trap_loc[idx_0]
-        angle_end = self.trap_loc[idx_1]
+        trap_start = torch.gather(self.trap, 0, idx_0[..., None])[..., 0]
+        trap_end = torch.gather(self.trap, 0, idx_1[..., None])[..., 0]
+
+        trap_diff = torch.clamp((trap_end - trap_start), min=1e-6)
+        weight = torch.clamp(((unif - trap_start) / trap_diff), 0, 1)
+        angle_start = self.trap_loc[idx_0, 0]
+        angle_end = self.trap_loc[idx_1, 0]
         angles = torch.lerp(angle_start, angle_end, weight)[..., None]
         out = self._mean @ aa_to_rmat(axes, angles)
         return out
@@ -56,12 +59,25 @@ class IsotropicGaussianSO3(Distribution):
         return out
 
     def _eps_ft(self, t: torch.Tensor) -> torch.Tensor:
-        vals = sqrt(pi) * self.eps ** (-3 / 2) * torch.exp(self.eps / 4) * torch.exp(-((t / 2) ** 2) / self.eps) \
-               * (t - torch.exp((-pi ** 2) / self.eps)
-                  * ((t - 2 * pi) * torch.exp(pi * t / self.eps) + (t + 2 * pi) * torch.exp(-pi * t / self.eps))
-                  ) / (2 * torch.sin(t / 2))
+        eps_d = self.eps.double()
+        t_d = t.double()
+        vals = sqrt(pi) * eps_d ** (-3 / 2) * torch.exp(eps_d / 4) * torch.exp(-((t_d / 2) ** 2) / eps_d) \
+               * (t_d - torch.exp((-pi ** 2) / eps_d)
+                  * ((t_d - 2 * pi) * torch.exp(pi * t_d / eps_d) + (
+                            t_d + 2 * pi) * torch.exp(-pi * t_d / eps_d))
+                  ) / (2 * torch.sin(t_d / 2))
         vals[vals.isinf()] = 0.0
-        return vals
+        vals[vals.isnan()] = 0.0
+
+        # using the value of the limit t -> 0 to fix nans at 0
+        t_big, _ = torch.broadcast_tensors(t_d, eps_d)
+        # Just trust me on this...
+        # This doesn't fix all nans as a lot are still too big to flit in float32 here
+        vals[t_big == 0] = sqrt(pi) * (eps_d * torch.exp(2 * pi ** 2 / eps_d)
+                                       - 2 * eps_d * torch.exp(pi ** 2 / eps_d)
+                                       + 4 * pi ** 2 * eps_d * torch.exp(pi ** 2 / eps_d)
+                                       ) * torch.exp(eps_d / 4 - (2 * pi ** 2) / eps_d) / eps_d ** (5 / 2)
+        return vals.float()
 
     def log_prob(self, rotations):
         _, angles = rmat_to_aa(rotations)
@@ -125,7 +141,6 @@ if __name__ == "__main__":
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     # Test bingham distribution and MMD numbers
     # Small, uncorrelated rotations
-    # Small, uncorrelated rotations
     cov1 = torch.diag(torch.tensor([1000.0, 0.1, 0.1, 0.1], device=device))
     # Small, similar-axis rotations, ijk parts need to be correlated
     cov2 = torch.tensor([
@@ -144,13 +159,12 @@ if __name__ == "__main__":
     ], device=device)
     #
 
-
     bing1 = Bingham(loc=torch.zeros(4, device=device), covariance_matrix=cov1)
     bing2 = Bingham(loc=torch.zeros(4, device=device), covariance_matrix=cov2)
 
-    b1samp_1 = bing1.sample((100_000,))
-    b1samp_2 = bing1.sample((100_000,))
-    b2samp_1 = bing2.sample((100_000,))
+    b1samp_1 = bing1.sample((10_000,))
+    b1samp_2 = bing1.sample((10_000,))
+    b2samp_1 = bing2.sample((10_000,))
     # Convert to rmat
     rb1samp_1 = quat_to_rmat(b1samp_1)
     rb1samp_2 = quat_to_rmat(b1samp_2)
@@ -172,8 +186,6 @@ if __name__ == "__main__":
         diff_test = Ker_2samp_log_prob(rb2samp_1, rb1samp_1, rmat_gaussian_kernel, chunksize=4000)
     print("MMD same test:", (same_test))
     print("MMD diff test:", (diff_test))
-
-
 
     axis = torch.randn((3,))
     axis = (axis / axis.norm(dim=-1, p=2, keepdim=True)).repeat(100, 1)
