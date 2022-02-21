@@ -21,7 +21,7 @@ if __name__ == "__main__":
     cov, = [c for _, a, c in covpairs if a == acro]
     device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
     results = {}
-    for step in tqdm.trange(1000, 100001, 1000):
+    for step in tqdm.trange(1000, 50001, 5000):
         net = RotPredict(out_type="skewvec").to(device)
         net.load_state_dict(torch.load(f"weights/weights_bing_{acro}_{step}.pt", map_location=device))
         diff = SO3Diffusion(net, loss_type="skewvec").to(device)
