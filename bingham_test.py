@@ -4,9 +4,11 @@ from distributions import Bingham, IsotropicGaussianSO3
 from diffusion import SO3Diffusion
 from util import *
 import pickle
-SAMPLES = 100_000
-NET_SAMPLES = 100_000
+SAMPLES = 20_000
+NET_SAMPLES = 20_000
 NET_RUNS = SAMPLES//NET_SAMPLES
+
+
 device = torch.device(f"cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
@@ -44,4 +46,5 @@ if __name__ == "__main__":
         p_results = pool.starmap(calc_step, eval_points)
     for (acro, cov, step), mmd in zip(eval_points, p_results):
         results[step] = mmd
+    results["count"] = SAMPLES
     pickle.dump(results, open(f'bingham_mmd_{acro}.pkl', 'wb'))

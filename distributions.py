@@ -50,33 +50,25 @@ class IsotropicGaussianSO3(Distribution):
         out = self._mean @ aa_to_rmat(axes, angles)
         return out
 
-    def _eps_ft_inner(self, l, t: torch.Tensor) -> torch.Tensor:
-        lt_sin = torch.sin((l + 0.5) * t) / torch.sin(t / 2)
-        lt_sin[t[..., 0] == 0.0] = ((l + 0.5) / 0.5)
-        newdims = (1,) * len(lt_sin.shape)
-        eps_exp = self.eps.view(-1, *newdims)
-        out = (2 * l + 1) * torch.exp(-l * (l + 1) * (eps_exp ** 2)) * lt_sin
-        return out
-
     def _eps_ft(self, t: torch.Tensor) -> torch.Tensor:
-        eps_d = self.eps.double()
+        var_d = self.eps.double()**2
         t_d = t.double()
-        vals = sqrt(pi) * eps_d ** (-3 / 2) * torch.exp(eps_d / 4) * torch.exp(-((t_d / 2) ** 2) / eps_d) \
-               * (t_d - torch.exp((-pi ** 2) / eps_d)
-                  * ((t_d - 2 * pi) * torch.exp(pi * t_d / eps_d) + (
-                            t_d + 2 * pi) * torch.exp(-pi * t_d / eps_d))
+        vals = sqrt(pi) * var_d ** (-3 / 2) * torch.exp(var_d / 4) * torch.exp(-((t_d / 2) ** 2) / var_d) \
+               * (t_d - torch.exp((-pi ** 2) / var_d)
+                  * ((t_d - 2 * pi) * torch.exp(pi * t_d / var_d) + (
+                            t_d + 2 * pi) * torch.exp(-pi * t_d / var_d))
                   ) / (2 * torch.sin(t_d / 2))
         vals[vals.isinf()] = 0.0
         vals[vals.isnan()] = 0.0
 
         # using the value of the limit t -> 0 to fix nans at 0
-        t_big, _ = torch.broadcast_tensors(t_d, eps_d)
+        t_big, _ = torch.broadcast_tensors(t_d, var_d)
         # Just trust me on this...
         # This doesn't fix all nans as a lot are still too big to flit in float32 here
-        vals[t_big == 0] = sqrt(pi) * (eps_d * torch.exp(2 * pi ** 2 / eps_d)
-                                       - 2 * eps_d * torch.exp(pi ** 2 / eps_d)
-                                       + 4 * pi ** 2 * eps_d * torch.exp(pi ** 2 / eps_d)
-                                       ) * torch.exp(eps_d / 4 - (2 * pi ** 2) / eps_d) / eps_d ** (5 / 2)
+        vals[t_big == 0] = sqrt(pi) * (var_d * torch.exp(2 * pi ** 2 / var_d)
+                                       - 2 * var_d * torch.exp(pi ** 2 / var_d)
+                                       + 4 * pi ** 2 * var_d * torch.exp(pi ** 2 / var_d)
+                                       ) * torch.exp(var_d / 4 - (2 * pi ** 2) / var_d) / var_d ** (5 / 2)
         return vals.float()
 
     def log_prob(self, rotations):
