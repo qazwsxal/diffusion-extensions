@@ -39,9 +39,9 @@ if __name__ == "__main__":
     acro = args.cov
     cov, = [c for _, a, c in covpairs if a == acro]
     results = dict()
-    eval_points = [(acro, cov, step) for step in range(1000, 50001, 5000)]
+    eval_points = [(acro, cov, step) for step in [100_000,]]
     with mp.Pool(processes=2) as pool:
         p_results = pool.starmap(calc_step, eval_points)
-    for (acro, step), mmd in zip(eval_points, p_results):
+    for (acro, cov, step), mmd in zip(eval_points, p_results):
         results[step] = mmd
     pickle.dump(results, open(f'bingham_mmd_{acro}.pkl', 'wb'))
