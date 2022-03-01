@@ -18,15 +18,14 @@ def calc_step(acro, cov, step):
     bing = Bingham(loc=loc.to(device), covariance_matrix=cov.to(device))
     bing_samples = bing.sample((SAMPLES,))
     bing_samples = quat_to_rmat(bing_samples)
-    diff_start = IsotropicGaussianSO3(eps=torch.ones(1, device=device))
     diff_samples = []
     for i in range(NET_RUNS):
         R = diff.p_sample_loop((NET_SAMPLES,))
         diff_samples.append(R)
     diff_samples = torch.cat(diff_samples, dim=0)
     print('aaaa')
-    mmd = MMD(bing_samples, diff_samples, rmat_gaussian_kernel)
-    results[step] = mmd.item()
+    mmd = MMD(bing_samples, diff_samples, rmat_gaussian_kernel, chunksize=4_000)
+    return mmd.item()
 
 if __name__ == "__main__":
     import argparse
@@ -39,10 +38,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     acro = args.cov
     cov, = [c for _, a, c in covpairs if a == acro]
-    results = {}
-    eval_points = [(acro, cov, step) for step in range(1000, 50001, 5000)]
-    with mp.Pool(processes=4) as pool:
+    results = dict()
+    eval_points = [(acro, cov, step) for step in [100_000,]]
+    with mp.Pool(processes=2) as pool:
         p_results = pool.starmap(calc_step, eval_points)
-    for (acro, step), mmd in zip(eval_points, p_results):
+    for (acro, cov, step), mmd in zip(eval_points, p_results):
         results[step] = mmd
     pickle.dump(results, open(f'bingham_mmd_{acro}.pkl', 'wb'))

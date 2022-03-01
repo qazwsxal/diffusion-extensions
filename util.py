@@ -337,6 +337,14 @@ def so3_lerp(rot_a: torch.Tensor, rot_b: torch.Tensor, weight: torch.Tensor) -> 
     rot_c_i = aa_to_rmat(axis, i_angle)
     return rot_a @ rot_c_i
 
+def so3_bezier(*rots, weight):
+    if len(rots) == 2:
+        return so3_lerp(*rots, weight=weight)
+    else:
+        a = so3_bezier(rots[:-1], weight=weight)
+        b = so3_bezier(rots[1:], weight=weight)
+        return so3_lerp(a,b, weight=weight)
+
 
 def so3_scale(rmat, scalars):
     '''Scale the magnitude of a rotation matrix,
